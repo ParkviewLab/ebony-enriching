@@ -1,26 +1,26 @@
 """Read-only vs. read-write scope filter.
 
-Tools are tagged with a `Scope` at registration time. The server's tool
-registry consults this when listing or dispatching tools, so:
+Tools are tagged with a `Scope` at registration time. The server reads
+`EBONY_SCOPE` once at startup and uses that single server-wide scope
+when listing or dispatching tools. A caller at tier N may see and call
+any tool whose required scope is ≤ N.
 
-- External (untrusted) clients see only `READ_ONLY` tools.
-- Internal SME agents (clients that present the configured shared token) see
-  both `READ_ONLY` and `READ_WRITE`.
+**Single tier per server.** v0 doesn't do per-client scope routing. To
+serve some callers read-only and others read-write, run two instances
+on different ports with different `EBONY_SCOPE` values. Per-client
+token-based routing was prototyped during scaffolding and pulled in
+v0.1.2 because it was advertised but never actually wired up — the
+unused functions falsely implied an enforcement layer that didn't exist.
 
-**No `REMOVE_DESTRUCTIVE` tier in ebony-enriching v0.** Lab-notebook
-semantics are append-only-with-status-transitions: don't delete proposals
-(transition to `rejected`); don't delete experiments (they're the
-historical record). The tier exists as a forward-compatibility placeholder
-but no v0 tool uses it. Reserved for future if a real use case emerges.
-
-Today's token check is intentionally trivial — a single shared secret in
-the `EBONY_INTERNAL_TOKEN` env var. If unset, all clients are treated as
-internal (single-user dev mode).
+**No `REMOVE_DESTRUCTIVE` tier in v0.** Lab-notebook semantics are
+append-only-with-status-transitions: don't delete proposals (transition
+to `rejected`); don't delete experiments (they're the historical
+record). The tier exists as a forward-compatibility placeholder but no
+v0 tool uses it.
 """
 
 from __future__ import annotations
 
-import os
 from enum import StrEnum
 
 
@@ -42,28 +42,3 @@ SCOPE_TIER: dict[Scope, int] = {
     Scope.READ_WRITE: 1,
     Scope.REMOVE_DESTRUCTIVE: 2,
 }
-
-
-# Single shared secret for v0. Internal clients present this token; external
-# clients don't. If unset (dev mode), everyone is internal.
-_INTERNAL_TOKEN_ENV = "EBONY_INTERNAL_TOKEN"
-
-
-def expected_internal_token() -> str | None:
-    """Return the configured internal token, or None if not set (dev mode)."""
-    return os.environ.get(_INTERNAL_TOKEN_ENV) or None
-
-
-def scope_for_token(presented: str | None) -> Scope:
-    """Map a presented token to a scope.
-
-    Dev mode (no token configured): every client is treated as internal.
-    Configured: only callers presenting the matching token get READ_WRITE;
-    everyone else is READ_ONLY.
-    """
-    expected = expected_internal_token()
-    if expected is None:
-        return Scope.READ_WRITE
-    if presented and presented == expected:
-        return Scope.READ_WRITE
-    return Scope.READ_ONLY
