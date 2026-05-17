@@ -2,88 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from ebony_enriching.storage import paths
 
-
-def _parse_sse(body: str) -> list[dict]:
-    """Pull `data: <json>` payloads out of a Streamable HTTP SSE response."""
-    out: list[dict] = []
-    for line in body.splitlines():
-        if line.startswith("data: "):
-            out.append(json.loads(line[6:]))
-        elif line.startswith("data:"):
-            out.append(json.loads(line[5:]))
-    return out
-
-
-def _mcp(
-    client: TestClient,
-    method: str,
-    params: dict | None = None,
-    *,
-    req_id: int = 1,
-    session_id: str | None = None,
-) -> tuple[dict, dict]:
-    """Send a JSON-RPC request to /sse; return (response_json, response_headers)."""
-    payload: dict = {"jsonrpc": "2.0", "id": req_id, "method": method}
-    if params is not None:
-        payload["params"] = params
-    headers = {
-        "Accept": "application/json, text/event-stream",
-        "Content-Type": "application/json",
-    }
-    if session_id:
-        headers["mcp-session-id"] = session_id
-    resp = client.post("/sse", json=payload, headers=headers)
-    assert resp.status_code == 200, f"{resp.status_code}: {resp.text!r}"
-    ct = resp.headers.get("content-type", "")
-    if ct.startswith("application/json"):
-        return resp.json(), dict(resp.headers)
-    msgs = _parse_sse(resp.text)
-    assert msgs, f"no SSE data lines in {resp.text!r}"
-    return msgs[-1], dict(resp.headers)
-
-
-def _initialize(client: TestClient) -> str:
-    body, headers = _mcp(
-        client,
-        "initialize",
-        {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "0.0"},
-        },
-        req_id=1,
-    )
-    assert body.get("result", {}).get("serverInfo", {}).get("name") == "ebony-enriching"
-    return headers.get("mcp-session-id", "")
-
-
-def _call_tool(
-    client: TestClient,
-    session_id: str,
-    name: str,
-    arguments: dict,
-    *,
-    req_id: int = 100,
-) -> dict:
-    body, _ = _mcp(
-        client,
-        "tools/call",
-        {"name": name, "arguments": arguments},
-        req_id=req_id,
-        session_id=session_id,
-    )
-    assert "result" in body, f"tools/call returned: {body!r}"
-    contents = body["result"]["content"]
-    assert contents and contents[0]["type"] == "text"
-    return json.loads(contents[0]["text"])
-
+from ._mcp_helpers import _call_tool, _initialize, _mcp
 
 # ---------------------------------------------------------------------------
 # HTTP routes
@@ -114,14 +39,22 @@ def test_admin_version(mcp_client: TestClient):
 # MCP surface
 
 
-def test_mcp_initialize_lists_b2_tools(mcp_client: TestClient):
-    """B-2 ships `status` + `bootstrap`. B-3 adds proposal CRUD; etc.
+def test_mcp_initialize_lists_b3_tools(mcp_client: TestClient):
+    """B-3 ships proposal CRUD on top of B-1+B-2. B-4 adds experiments; etc.
     This test pins the v0 surface — when new tools land, update the expected set."""
     sid = _initialize(mcp_client)
     body, _ = _mcp(mcp_client, "tools/list", {}, req_id=2, session_id=sid)
     assert "result" in body, f"tools/list returned: {body!r}"
     names = {t["name"] for t in body["result"]["tools"]}
-    assert names == {"status", "bootstrap"}, f"unexpected tool set at B-2: {names}"
+    assert names == {
+        "status",
+        "bootstrap",
+        "read_proposal",
+        "list_proposals",
+        "write_proposal",
+        "update_proposal_status",
+        "supersede_proposal",
+    }, f"unexpected tool set at B-3: {names}"
 
 
 def test_status_tool(mcp_client: TestClient):
@@ -190,27 +123,31 @@ def test_bootstrap_idempotent(mcp_client: TestClient):
 
 def test_bootstrap_partial_recovery(mcp_client: TestClient):
     """After a full bootstrap, delete one dir + one file; re-running bootstrap
-    must restore exactly those two paths and report them in `created_*`."""
+    must restore exactly those two paths and report them in `created_*`.
+
+    Uses `proposals/toolsmith` for the dir (no other test writes to it, so
+    `rmdir` succeeds regardless of test-module ordering) and `schema/POLICY.md`
+    for the file (no other test mutates it)."""
     sid = _initialize(mcp_client)
     _call_tool(mcp_client, sid, "bootstrap", {}, req_id=23)
 
     root = _ebony_dir(mcp_client)
-    cogitate_dir = root / "proposals" / "cogitate"
+    toolsmith_dir = root / "proposals" / "toolsmith"
     policy_md = root / "schema" / "POLICY.md"
 
-    assert cogitate_dir.is_dir()
+    assert toolsmith_dir.is_dir()
     assert policy_md.is_file()
 
-    cogitate_dir.rmdir()
+    toolsmith_dir.rmdir()
     policy_md.unlink()
-    assert not cogitate_dir.exists()
+    assert not toolsmith_dir.exists()
     assert not policy_md.exists()
 
     result = _call_tool(mcp_client, sid, "bootstrap", {}, req_id=24)
-    assert result["created_dirs"] == ["proposals/cogitate"]
+    assert result["created_dirs"] == ["proposals/toolsmith"]
     assert result["created_files"] == ["schema/POLICY.md"]
 
-    assert cogitate_dir.is_dir()
+    assert toolsmith_dir.is_dir()
     assert policy_md.is_file()
 
 
