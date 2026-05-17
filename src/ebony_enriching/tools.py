@@ -9,8 +9,7 @@ delegates here via `dispatch()`.
 Same registration pattern as smalt-mcp's `tools.py` — adding a new tool
 is `ToolDef` entry + handler function; no edits to `server.py`.
 
-**B-3 ships proposal CRUD on top of B-1+B-2.** B-4 adds experiments;
-B-5 adds gaps.
+**B-4 ships experiments on top of B-1+B-2+B-3.** B-5 adds gaps.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from ebony_enriching.permissions import SCOPE_TIER, Scope
 from ebony_enriching.schema import (
+    EXPERIMENT_ADAPTER,
     PROPOSAL_ADAPTER,
     ProposalPage,
     ProposalStatus,
@@ -483,6 +484,196 @@ async def supersede_proposal(app: App, arguments: dict[str, Any]) -> dict[str, A
     }
 
 
+# ---- experiment helpers ----
+#
+# On-disk timestamp format: ISO 8601 with `:` swapped for `-` so the
+# filename is portable across Windows / macOS / Linux. UTC ('Z' suffix)
+# is the canonical form; if a caller passes a non-UTC datetime, we
+# normalize to UTC before formatting.
+
+_RUN_TIMESTAMP_FILENAME_FORMAT = "%Y-%m-%dT%H-%M-%SZ"
+
+
+def _timestamp_to_filename(ts: datetime) -> str:
+    """Format a datetime as a filesystem-safe filename component (no `.md`)."""
+    ts_utc = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+    return ts_utc.strftime(_RUN_TIMESTAMP_FILENAME_FORMAT)
+
+
+def _parse_timestamp_filename(name: str) -> datetime | None:
+    """Reverse of `_timestamp_to_filename`. Returns None on malformed input."""
+    try:
+        return datetime.strptime(name, _RUN_TIMESTAMP_FILENAME_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _experiment_target_path(ebony_root: Path, proposal_id: str, ts: datetime) -> Path:
+    """`experiments/<proposal_id>/<filename-safe-timestamp>.md`."""
+    return paths.experiments_dir(ebony_root) / proposal_id / f"{_timestamp_to_filename(ts)}.md"
+
+
+# ---- handler: write_experiment ----
+
+
+async def write_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Record one run of a proposal's prediction test.
+
+    Stored at `experiments/<proposal_id>/<run_timestamp>.md`. `run_timestamp`
+    defaults to `datetime.now(UTC)` if omitted. Atomic write via `write_doc`.
+    No mutex — concurrent writes for different `(proposal_id, run_timestamp)`
+    pairs land at distinct paths; same-pair races are a caller-discipline
+    concern (and rare since callers typically generate timestamps fresh).
+
+    No referential-integrity check: the experiment may reference a
+    proposal_id that doesn't exist yet (or no longer exists). Audit-style
+    integrity is a separate concern (cobalt-grinding's Curate agent).
+    """
+    if not app.ebony_exists():
+        return _not_initialized()
+
+    proposal_id = arguments.get("proposal_id")
+    if not proposal_id:
+        return {"error": "missing_argument", "message": "proposal_id is required"}
+    input_text = arguments.get("input")
+    if input_text is None:
+        return {"error": "missing_argument", "message": "input is required"}
+    result_text = arguments.get("result")
+    if result_text is None:
+        return {"error": "missing_argument", "message": "result is required"}
+
+    raw_ts = arguments.get("run_timestamp")
+    run_ts = raw_ts if raw_ts is not None else datetime.now(UTC).isoformat()
+
+    record_fm: dict[str, Any] = {
+        "proposal_id": proposal_id,
+        "run_timestamp": run_ts,
+        "input": input_text,
+        "result": result_text,
+    }
+    links = arguments.get("links_to_proposal")
+    if links is not None:
+        record_fm["links_to_proposal"] = links
+
+    try:
+        record = EXPERIMENT_ADAPTER.validate_python(record_fm)
+    except ValidationError as e:
+        return {"error": "validation_error", "message": str(e)}
+
+    target = _experiment_target_path(app.cfg.ebony_dir, record.proposal_id, record.run_timestamp)
+    # Serialize datetime as ISO 8601 string in the on-disk frontmatter so a
+    # round-trip through parse_doc → EXPERIMENT_ADAPTER returns the same
+    # value. (PyYAML would emit `!!timestamp` otherwise; readers shouldn't
+    # need to teach themselves YAML tags.)
+    on_disk_fm = dict(record_fm)
+    on_disk_fm["run_timestamp"] = record.run_timestamp.isoformat()
+    write_doc(target, on_disk_fm, "")
+
+    return {
+        "proposal_id": record.proposal_id,
+        "run_timestamp": record.run_timestamp.isoformat(),
+        "path": str(target.relative_to(app.cfg.ebony_dir)),
+    }
+
+
+# ---- handler: read_experiment ----
+
+
+async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return a single experiment record by `(proposal_id, run_timestamp)`.
+
+    Path is deterministic — no walk needed. Returns `{error: not_found}`
+    when the file doesn't exist; `{error: invalid_value}` for a malformed
+    `run_timestamp`.
+    """
+    if not app.ebony_exists():
+        return _not_initialized()
+
+    proposal_id = arguments.get("proposal_id")
+    if not proposal_id:
+        return {"error": "missing_argument", "message": "proposal_id is required"}
+    raw_ts = arguments.get("run_timestamp")
+    if not raw_ts:
+        return {"error": "missing_argument", "message": "run_timestamp is required"}
+
+    try:
+        ts = datetime.fromisoformat(raw_ts)
+    except (TypeError, ValueError):
+        return {
+            "error": "invalid_value",
+            "field": "run_timestamp",
+            "message": f"run_timestamp={raw_ts!r} is not a parseable ISO 8601 timestamp",
+        }
+
+    target = _experiment_target_path(app.cfg.ebony_dir, proposal_id, ts)
+    if not target.is_file():
+        return {
+            "error": "not_found",
+            "proposal_id": proposal_id,
+            "run_timestamp": raw_ts,
+        }
+
+    try:
+        parsed = parse_doc(target)
+    except ValueError as e:
+        return {"error": "parse_error", "message": str(e)}
+
+    fm = parsed.raw_frontmatter
+    return {
+        "proposal_id": fm.get("proposal_id", proposal_id),
+        "run_timestamp": fm.get("run_timestamp"),
+        "input": fm.get("input"),
+        "result": fm.get("result"),
+        "links_to_proposal": fm.get("links_to_proposal"),
+        "path": str(target.relative_to(app.cfg.ebony_dir)),
+    }
+
+
+# ---- handler: list_experiments ----
+
+
+async def list_experiments(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
+    """List experiments under `experiments/`.
+
+    If `proposal_id` is provided, only experiments for that proposal are
+    listed (`experiments/<proposal_id>/*.md`); otherwise all experiments
+    across all proposals (`experiments/**/*.md`). Returns summary metadata
+    — call `read_experiment` for the full input/result text.
+    """
+    if not app.ebony_exists():
+        return _not_initialized()
+
+    proposal_id = arguments.get("proposal_id")
+    exp_root = paths.experiments_dir(app.cfg.ebony_dir)
+    if not exp_root.exists():
+        return {"experiments": [], "count": 0}
+
+    if proposal_id:
+        scoped_root = exp_root / proposal_id
+        if not scoped_root.is_dir():
+            return {"experiments": [], "count": 0}
+        files = sorted(scoped_root.glob("*.md"))
+    else:
+        files = sorted(exp_root.rglob("*.md"))
+
+    out: list[dict[str, Any]] = []
+    for f in files:
+        if not f.is_file():
+            continue
+        # proposal_id derived from path; run_timestamp from filename stem.
+        path_proposal_id = f.parent.name
+        ts = _parse_timestamp_filename(f.stem)
+        run_timestamp = ts.isoformat() if ts else f.stem  # surface raw stem if unparseable
+        out.append(
+            {
+                "proposal_id": path_proposal_id,
+                "run_timestamp": run_timestamp,
+                "path": str(f.relative_to(app.cfg.ebony_dir)),
+            }
+        )
+    return {"experiments": out, "count": len(out)}
+
+
 # ---- handler: status ----
 
 
@@ -569,6 +760,54 @@ TOOLS: list[ToolDef] = [
         ),
         scope=Scope.READ_ONLY,
         handler=list_proposals,
+    ),
+    ToolDef(
+        spec=types.Tool(
+            name="read_experiment",
+            description=(
+                "Read one experiment record by `(proposal_id, run_timestamp)`. "
+                "`run_timestamp` is an ISO 8601 timestamp (the same value that "
+                "was written or returned by `list_experiments`). Returns "
+                "`not_found` if the file doesn't exist."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "proposal_id": {"type": "string", "description": "proposal this experiment tests"},
+                    "run_timestamp": {
+                        "type": "string",
+                        "description": "ISO 8601 UTC timestamp identifying the run",
+                    },
+                },
+                "required": ["proposal_id", "run_timestamp"],
+            },
+        ),
+        scope=Scope.READ_ONLY,
+        handler=read_experiment,
+    ),
+    ToolDef(
+        spec=types.Tool(
+            name="list_experiments",
+            description=(
+                "List experiments under `experiments/`. With `proposal_id`, "
+                "only experiments for that proposal; without, all experiments "
+                "across all proposals. Returns summary metadata "
+                "(`proposal_id`, `run_timestamp`, `path`); call "
+                "`read_experiment` for full input/result text."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "proposal_id": {
+                        "type": "string",
+                        "description": "filter to one proposal (optional)",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        scope=Scope.READ_ONLY,
+        handler=list_experiments,
     ),
     # ---- READ_WRITE ----
     ToolDef(
@@ -669,6 +908,42 @@ TOOLS: list[ToolDef] = [
         ),
         scope=Scope.READ_WRITE,
         handler=supersede_proposal,
+    ),
+    ToolDef(
+        spec=types.Tool(
+            name="write_experiment",
+            description=(
+                "Record one run of a proposal's prediction test at "
+                "`experiments/<proposal_id>/<run_timestamp>.md`. "
+                "`run_timestamp` is optional (defaults to now-UTC) and must "
+                "be ISO 8601. `input` and `result` are markdown text. "
+                "Does not check that the referenced proposal exists — that's "
+                "an audit concern, not an integrity check at the substrate "
+                "layer."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "proposal_id": {
+                        "type": "string",
+                        "description": "proposal this experiment tests",
+                    },
+                    "input": {"type": "string", "description": "what was tested (markdown)"},
+                    "result": {"type": "string", "description": "outcome description (markdown)"},
+                    "run_timestamp": {
+                        "type": "string",
+                        "description": "ISO 8601 UTC timestamp (optional; defaults to now)",
+                    },
+                    "links_to_proposal": {
+                        "type": "string",
+                        "description": "optional explicit pointer back to the proposal's on-disk path",
+                    },
+                },
+                "required": ["proposal_id", "input", "result"],
+            },
+        ),
+        scope=Scope.READ_WRITE,
+        handler=write_experiment,
     ),
 ]
 
