@@ -101,10 +101,25 @@ def test_add_gap_query_normalization(mcp_client: TestClient):
     assert a["gap_id"] == b["gap_id"]
 
 
-def test_add_gap_missing_query(mcp_client: TestClient):
+def test_add_gap_rejects_empty_query(mcp_client: TestClient):
+    """Empty `query` is rejected at the handler-layer `if not query` check.
+    (A totally-absent `query` key gets rejected by MCP's JSON-Schema
+    `required` enforcement before the handler runs, so we don't test that
+    path — same precedent as the dropped tests in B-3 / B-4.)"""
     sid = _initialize(mcp_client)
     result = _call_tool(mcp_client, sid, "add_gap", {"query": ""}, req_id=3050)
     assert result["error"] == "missing_argument"
+
+
+def test_add_gap_rejects_whitespace_only_query(mcp_client: TestClient):
+    """S4 regression (v0.1.3+): pre-fix, `add_gap({'query': '   '})`
+    succeeded — `compute_gap_id` normalized to '' (SHA-256 of empty bytes),
+    so every whitespace-only query collided at the same `e3b0c442` id with
+    a blank visible bullet. Now rejected at the handler level."""
+    sid = _initialize(mcp_client)
+    for blank in ("   ", "\t\t", "\n\n", " \t \n"):
+        result = _call_tool(mcp_client, sid, "add_gap", {"query": blank}, req_id=3055)
+        assert result["error"] == "missing_argument", f"expected missing_argument for {blank!r}; got {result}"
 
 
 # ---------------------------------------------------------------------------
@@ -154,11 +169,15 @@ def test_remove_gap_removes_and_persists(mcp_client: TestClient):
 
 def test_remove_gap_unknown_is_noop(mcp_client: TestClient):
     sid = _initialize(mcp_client)
+    # Use a clearly-not-a-hash id so that if a future change adds
+    # gap_id format validation to remove_gap, this test would fail
+    # (validation_error, not removed:0) rather than silently passing
+    # for the wrong reason.
     result = _call_tool(
         mcp_client,
         sid,
         "remove_gap",
-        {"gap_id": "ffffffff"},
+        {"gap_id": "definitely-not-a-real-id"},
         req_id=3080,
     )
     assert result["removed"] == 0

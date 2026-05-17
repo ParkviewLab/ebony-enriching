@@ -16,6 +16,17 @@ a name so traces and logs make it obvious what's serializing. Copied from
 smalt-mcp's `CorpusWriteMutex`; the shape is the same even though the
 substrate underneath is different (filesystem-only here vs. LanceDB-backed
 there).
+
+**Invariant for handlers:** code inside `with mutex.acquire(name):` must
+remain synchronous (no `await`). Under uvicorn single-worker (the default
+deployment), every async handler runs on one event-loop thread, so a
+`threading.Lock` correctly serializes the synchronous critical sections.
+If a handler ever awaits while holding the lock, the lock is still held
+across the suspension point — fine for `threading.Lock` semantics, but
+the moment we start serving handlers on *multiple* threads (or want
+fairness across awaits), this should become an `asyncio.Lock` instead.
+Today no handler awaits inside the critical section; if you add one,
+revisit this module.
 """
 
 from __future__ import annotations

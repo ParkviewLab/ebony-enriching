@@ -1,8 +1,6 @@
 # ebony-enriching
 
-MCP server: **the lab notebook substrate** (proposals + experiments + gap signals) for ParkviewLab's [CoGrind](https://github.com/ParkviewLab/cobalt-grinding) project.
-
-Sister to [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp): smalt-mcp is the **library** (canonical knowledge); ebony-enriching is the **lab notebook** (research-in-flight). Both substrates have zero outbound dependencies — cobalt-grinding's cognitive agents orchestrate any cross-substrate flow.
+MCP server: an MCP lab notebook.
 
 ## Status
 
@@ -14,16 +12,6 @@ Sister to [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp): smalt-mcp is 
 No `REMOVE_DESTRUCTIVE` tier in v0 — lab-notebook semantics are append-only with status transitions (don't delete proposals, transition to `rejected`; don't delete experiments, they're the historical record). Gaps are the one exception: `remove_gap` exists because a gap is a transient signal that gets resolved when the answering work lands.
 
 ## Lab notebook
-
-A scientist keeps two artifacts: a **library** of established knowledge (textbooks, published papers, vetted references) and a **lab notebook** where research-in-flight lives (observations, hypotheses, tested predictions, unanswered questions). The two have different rules — the library is canonical and citable, the notebook is messy and dated. cobalt-grinding mirrors this split across two MCP servers:
-
-| Concept | Library | Lab notebook |
-|---|---|---|
-| **Server** | `smalt-mcp` | `ebony-enriching` |
-| **Substrate dir** | `~/Documents/Smalt/` | `~/Documents/EbonyEnriching/` |
-| **Storage** | LanceDB + markdown (hybrid FTS + vector + alias search) | Filesystem + markdown only (filesystem walks) |
-| **Lifecycle** | pages stabilize toward canonical state; old versions superseded by new | proposals flow through `proposed → under_test → validated → applied \| rejected`; experiments accrue; gaps queue and drain |
-| **Tier of truth** | one-and-only canonical store | working memory that publishes to the library when validated |
 
 **ebony-enriching records; it doesn't decide.** Lifecycle policy (when to mark a proposal `rejected`, when to auto-test vs. defer to user review, what counts as falsifiability) lives in cobalt-grinding's cognitive agents reading the substrate's `POLICY.md`. The MCP tools enforce **storage** correctness (path safety, atomicity, schema validation) and nothing else.
 

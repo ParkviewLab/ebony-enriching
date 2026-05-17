@@ -9,6 +9,7 @@ body" / "join them back" primitives.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 from dataclasses import dataclass
@@ -73,11 +74,23 @@ def write_doc(target: Path, frontmatter_dict: dict[str, Any], body: str) -> None
 
     Atomic = write to a sibling `.tmp` file, then `os.replace()` onto the
     target. Caller is responsible for holding any required write-lock (mutex).
+
+    On failure (e.g. `os.replace` raises for permissions or cross-device
+    move), the `.tmp` sibling is unlinked so failures don't leave orphans
+    on disk. Self-recovery via overwrite still works regardless, but the
+    cleanup keeps `ls` output honest.
     """
     post = frontmatter.Post(body)
     post.metadata.update(frontmatter_dict)
     serialized = frontmatter.dumps(post)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(serialized, encoding="utf-8")
-    os.replace(tmp, target)
+    try:
+        tmp.write_text(serialized, encoding="utf-8")
+        os.replace(tmp, target)
+    except BaseException:
+        # Best-effort cleanup; suppress OSError so the original exception
+        # is what callers see.
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise

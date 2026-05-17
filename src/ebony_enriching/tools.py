@@ -333,7 +333,16 @@ async def read_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     path = matches[0]
-    parsed = parse_doc(path)
+    try:
+        parsed = parse_doc(path)
+    except ValueError as e:
+        # S2 fix (v0.1.3+): same shape `read_experiment` uses; was previously
+        # uncaught, bubbling up to the generic tool_error wrapper.
+        return {
+            "error": "parse_error",
+            "path": str(path.relative_to(app.cfg.ebony_dir)),
+            "message": str(e),
+        }
     return {
         "id": proposal_id,
         "frontmatter": parsed.raw_frontmatter,
@@ -441,10 +450,10 @@ async def list_proposals(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 # ---- handler: update_proposal_status ----
 
 
-_STATUS_ENUMS: tuple[tuple[str, type, str], ...] = (
-    ("status", ProposalStatus, "status"),
-    ("test_status", TestStatus, "test_status"),
-    ("test_cost", TestCost, "test_cost"),
+_STATUS_ENUMS: tuple[tuple[str, type], ...] = (
+    ("status", ProposalStatus),
+    ("test_status", TestStatus),
+    ("test_cost", TestCost),
 )
 
 
@@ -469,7 +478,7 @@ async def update_proposal_status(app: App, arguments: dict[str, Any]) -> dict[st
 
     # Validate each provided field against its enum up-front (before locking).
     validated: dict[str, str] = {}
-    for arg_name, enum_cls, _field in _STATUS_ENUMS:
+    for arg_name, enum_cls in _STATUS_ENUMS:
         raw = arguments.get(arg_name)
         if raw is None:
             continue
@@ -493,11 +502,19 @@ async def update_proposal_status(app: App, arguments: dict[str, Any]) -> dict[st
                 "matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in matches],
             }
         path = matches[0]
-        parsed = parse_doc(path)
+        try:
+            parsed = parse_doc(path)
+        except ValueError as e:
+            # S2 fix (v0.1.3+): match read_experiment's parse_error shape.
+            return {
+                "error": "parse_error",
+                "path": str(path.relative_to(app.cfg.ebony_dir)),
+                "message": str(e),
+            }
         fm = dict(parsed.raw_frontmatter)
-        for arg_name, _enum, field in _STATUS_ENUMS:
+        for arg_name, _enum in _STATUS_ENUMS:
             if arg_name in validated:
-                fm[field] = validated[arg_name]
+                fm[arg_name] = validated[arg_name]
         write_doc(path, fm, parsed.body)
 
     result: dict[str, Any] = {
@@ -563,12 +580,32 @@ async def supersede_proposal(app: App, arguments: dict[str, Any]) -> dict[str, A
 
         old_path, new_path = old_matches[0], new_matches[0]
 
-        old_parsed = parse_doc(old_path)
+        # S2 fix (v0.1.3+): match read_experiment's parse_error shape on
+        # either of the two parse_doc calls. Report which side failed so
+        # the human fixing it knows where to look.
+        try:
+            old_parsed = parse_doc(old_path)
+        except ValueError as e:
+            return {
+                "error": "parse_error",
+                "side": "old",
+                "path": str(old_path.relative_to(app.cfg.ebony_dir)),
+                "message": str(e),
+            }
+        try:
+            new_parsed = parse_doc(new_path)
+        except ValueError as e:
+            return {
+                "error": "parse_error",
+                "side": "new",
+                "path": str(new_path.relative_to(app.cfg.ebony_dir)),
+                "message": str(e),
+            }
+
         old_fm = dict(old_parsed.raw_frontmatter)
         old_fm["superseded_by"] = new_id
         write_doc(old_path, old_fm, old_parsed.body)
 
-        new_parsed = parse_doc(new_path)
         new_fm = dict(new_parsed.raw_frontmatter)
         new_fm["supersedes"] = old_id
         write_doc(new_path, new_fm, new_parsed.body)
@@ -774,7 +811,14 @@ async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]
     try:
         parsed = parse_doc(target)
     except ValueError as e:
-        return {"error": "parse_error", "message": str(e)}
+        # S2 alignment (v0.1.3+): include `path` so the shape matches the
+        # parse_error shape used by read_proposal / update_proposal_status /
+        # supersede_proposal.
+        return {
+            "error": "parse_error",
+            "path": str(target.relative_to(app.cfg.ebony_dir)),
+            "message": str(e),
+        }
 
     # Canonical run_timestamp from the filename (the filename is the
     # authoritative key, not the frontmatter — they may differ for legacy
@@ -865,8 +909,13 @@ async def add_gap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         return _not_initialized()
 
     query = arguments.get("query")
-    if not query:
-        return {"error": "missing_argument", "message": "query is required"}
+    # S4 fix (v0.1.3+): reject whitespace-only queries. `compute_gap_id`
+    # normalizes via strip+collapse, so `"   "` would hash the empty
+    # string and every whitespace-only query would collide at the same
+    # `e3b0c442` id with a blank visible bullet. Mirror the normalization
+    # here so the empty check happens against the same shape.
+    if not query or not " ".join(query.split()):
+        return {"error": "missing_argument", "message": "query is required (non-whitespace)"}
     why = arguments.get("why")
     source = arguments.get("source")
 
