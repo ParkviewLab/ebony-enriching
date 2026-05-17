@@ -6,7 +6,7 @@ Sister to [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp): smalt-mcp is 
 
 ## Status
 
-**v0.1 (B-3).** Server runs; `status` + `bootstrap` + full proposal CRUD wired up; schema models (`ProposalPage`, `ExperimentRecord`, `GapEntry`) live. Experiments + gaps in B-4 → B-5; cross-server scenario tests + release in B-6 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
+**v0.1 (B-4).** Server runs; `status` + `bootstrap` + full proposal CRUD + experiments wired up; schema models (`ProposalPage`, `ExperimentRecord`, `GapEntry`) live. Gaps in B-5; cross-server scenario tests + release in B-6 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
 
 The full v0.1.0 tool surface (target, when B-8 ships): 13 tools across 2 permission tiers.
 
@@ -64,13 +64,15 @@ Or use [`docker-compose.yml`](docker-compose.yml).
 
 HTTP responses are gzipped when the client sends `Accept-Encoding: gzip`.
 
-## MCP tools (B-3)
+## MCP tools (B-4)
 
 **Read-only:**
 
 - `status` — EbonyEnriching path, existence, single-writer mutex state. Always safe to call.
 - `read_proposal` — read a single proposal by id. Returns full frontmatter + body.
 - `list_proposals` — list proposals, optionally filtered by `system` (subdir), `status` (lifecycle state), or `kind` (`proposal_kind`). Malformed proposals appear with `valid: false` rather than being silently dropped.
+- `read_experiment` — read one experiment record by `(proposal_id, run_timestamp)`. Returns full input + result.
+- `list_experiments` — list experiments. With `proposal_id`, only that proposal's runs; without, all experiments. Returns summary metadata.
 
 **Read-write:**
 
@@ -78,8 +80,9 @@ HTTP responses are gzipped when the client sends `Accept-Encoding: gzip`.
 - `write_proposal` — write a proposal to `proposals/<subdir>/<id>.md`. Schema-related kinds (`schema_addition` / `schema_drift` / `schema_removal`) route to `proposals/schema/`; others to `proposals/<proposed_by>/`. Atomic write.
 - `update_proposal_status` — update a proposal's lifecycle fields (`status`, optional `test_status`, `test_cost`) in-place. RMW under the single-writer mutex. Validates values against their StrEnum but does NOT enforce transition rules — that policy lives in cobalt-grinding's agents.
 - `supersede_proposal` — link two proposals: sets `superseded_by: new_id` on `old_id` and `supersedes: old_id` on `new_id`. Both must already exist; does not transition statuses.
+- `write_experiment` — record one run of a proposal's prediction test at `experiments/<proposal_id>/<run_timestamp>.md`. `run_timestamp` defaults to now (UTC). Doesn't check that the referenced proposal exists.
 
-**Coming in B-4 → B-8** — see the Status section above for the full target surface.
+**Coming in B-5 → B-8** — see the Status section above for the full target surface.
 
 ## Configuration
 

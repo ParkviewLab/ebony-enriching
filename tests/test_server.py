@@ -39,8 +39,8 @@ def test_admin_version(mcp_client: TestClient):
 # MCP surface
 
 
-def test_mcp_initialize_lists_b3_tools(mcp_client: TestClient):
-    """B-3 ships proposal CRUD on top of B-1+B-2. B-4 adds experiments; etc.
+def test_mcp_initialize_lists_b4_tools(mcp_client: TestClient):
+    """B-4 ships experiments on top of B-1+B-2+B-3. B-5 adds gaps.
     This test pins the v0 surface — when new tools land, update the expected set."""
     sid = _initialize(mcp_client)
     body, _ = _mcp(mcp_client, "tools/list", {}, req_id=2, session_id=sid)
@@ -54,7 +54,10 @@ def test_mcp_initialize_lists_b3_tools(mcp_client: TestClient):
         "write_proposal",
         "update_proposal_status",
         "supersede_proposal",
-    }, f"unexpected tool set at B-3: {names}"
+        "read_experiment",
+        "list_experiments",
+        "write_experiment",
+    }, f"unexpected tool set at B-4: {names}"
 
 
 def test_status_tool(mcp_client: TestClient):
