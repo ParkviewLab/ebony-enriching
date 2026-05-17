@@ -32,6 +32,7 @@ from ebony_enriching.schema import (
     ProposalStatus,
     TestCost,
     TestStatus,
+    _validate_id,
 )
 from ebony_enriching.storage import gaps as gaps_storage
 from ebony_enriching.storage import paths
@@ -492,26 +493,73 @@ async def supersede_proposal(app: App, arguments: dict[str, Any]) -> dict[str, A
 # is the canonical form; if a caller passes a non-UTC datetime, we
 # normalize to UTC before formatting.
 
-_RUN_TIMESTAMP_FILENAME_FORMAT = "%Y-%m-%dT%H-%M-%SZ"
+# New (v0.1.1+) format: includes microsecond precision so two writes in
+# the same second to the same proposal_id don't silently overwrite (CVE-class
+# data-loss bug in v0.1.0). Legacy format kept for read-side back-compat;
+# files written by v0.1.0 remain readable.
+_RUN_TIMESTAMP_FILENAME_FORMAT = "%Y-%m-%dT%H-%M-%S-%fZ"
+_RUN_TIMESTAMP_FILENAME_FORMAT_LEGACY = "%Y-%m-%dT%H-%M-%SZ"
 
 
 def _timestamp_to_filename(ts: datetime) -> str:
-    """Format a datetime as a filesystem-safe filename component (no `.md`)."""
+    """Format a datetime as a filesystem-safe filename component (no `.md`).
+
+    Writes always use the current (microsecond-precision) format.
+    """
     ts_utc = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
     return ts_utc.strftime(_RUN_TIMESTAMP_FILENAME_FORMAT)
 
 
 def _parse_timestamp_filename(name: str) -> datetime | None:
-    """Reverse of `_timestamp_to_filename`. Returns None on malformed input."""
-    try:
-        return datetime.strptime(name, _RUN_TIMESTAMP_FILENAME_FORMAT).replace(tzinfo=UTC)
-    except ValueError:
-        return None
+    """Reverse of `_timestamp_to_filename`.
+
+    Tries the current format first, then the legacy v0.1.0 format
+    (second-precision). Returns None on malformed input.
+    """
+    for fmt in (_RUN_TIMESTAMP_FILENAME_FORMAT, _RUN_TIMESTAMP_FILENAME_FORMAT_LEGACY):
+        try:
+            return datetime.strptime(name, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def _canonical_run_timestamp(ts: datetime) -> str:
+    """Return the canonical ISO 8601 string for `ts`.
+
+    Equivalent to round-tripping through `_timestamp_to_filename` →
+    `_parse_timestamp_filename`, which guarantees `write_experiment`,
+    `read_experiment`, and `list_experiments` all return exactly the
+    same shape for the same logical experiment.
+    """
+    parsed = _parse_timestamp_filename(_timestamp_to_filename(ts))
+    assert parsed is not None, "round-trip through filename format should never fail"
+    return parsed.isoformat()
 
 
 def _experiment_target_path(ebony_root: Path, proposal_id: str, ts: datetime) -> Path:
-    """`experiments/<proposal_id>/<filename-safe-timestamp>.md`."""
+    """`experiments/<proposal_id>/<filename-safe-timestamp>.md` (new format).
+
+    Caller is responsible for validating `proposal_id` as a path component
+    (see `_validate_id`); this helper composes the path without checking.
+    """
     return paths.experiments_dir(ebony_root) / proposal_id / f"{_timestamp_to_filename(ts)}.md"
+
+
+def _find_experiment_file(ebony_root: Path, proposal_id: str, ts: datetime) -> Path | None:
+    """Resolve an experiment file by `(proposal_id, ts)`.
+
+    Tries the current filename format, then the legacy v0.1.0 format
+    (second-precision). Returns the path on success or `None` if neither
+    file exists. Caller is responsible for validating `proposal_id`.
+    """
+    ts_utc = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+    base = paths.experiments_dir(ebony_root) / proposal_id
+    for fmt in (_RUN_TIMESTAMP_FILENAME_FORMAT, _RUN_TIMESTAMP_FILENAME_FORMAT_LEGACY):
+        candidate = base / f"{ts_utc.strftime(fmt)}.md"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 # ---- handler: write_experiment ----
@@ -562,17 +610,18 @@ async def write_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any
         return {"error": "validation_error", "message": str(e)}
 
     target = _experiment_target_path(app.cfg.ebony_dir, record.proposal_id, record.run_timestamp)
-    # Serialize datetime as ISO 8601 string in the on-disk frontmatter so a
-    # round-trip through parse_doc → EXPERIMENT_ADAPTER returns the same
-    # value. (PyYAML would emit `!!timestamp` otherwise; readers shouldn't
-    # need to teach themselves YAML tags.)
+    canonical_ts = _canonical_run_timestamp(record.run_timestamp)
+    # Serialize the canonical ISO 8601 string into the on-disk frontmatter
+    # so the round-trip through write / read / list returns the same shape.
+    # (PyYAML would emit `!!timestamp` for a raw datetime; readers shouldn't
+    # have to teach themselves YAML tags.)
     on_disk_fm = dict(record_fm)
-    on_disk_fm["run_timestamp"] = record.run_timestamp.isoformat()
+    on_disk_fm["run_timestamp"] = canonical_ts
     write_doc(target, on_disk_fm, "")
 
     return {
         "proposal_id": record.proposal_id,
-        "run_timestamp": record.run_timestamp.isoformat(),
+        "run_timestamp": canonical_ts,
         "path": str(target.relative_to(app.cfg.ebony_dir)),
     }
 
@@ -585,7 +634,12 @@ async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]
 
     Path is deterministic — no walk needed. Returns `{error: not_found}`
     when the file doesn't exist; `{error: invalid_value}` for a malformed
-    `run_timestamp`.
+    `run_timestamp`; `{error: validation_error}` when `proposal_id` fails
+    path-component validation (would otherwise escape `experiments/`).
+
+    `run_timestamp` in the response is the canonical form (derived from
+    the filename), guaranteed to match what `write_experiment` and
+    `list_experiments` return for the same experiment.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -593,6 +647,14 @@ async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]
     proposal_id = arguments.get("proposal_id")
     if not proposal_id:
         return {"error": "missing_argument", "message": "proposal_id is required"}
+    # Fix C1: validate `proposal_id` as a path component before forming a
+    # path. v0.1.0 omitted this check, allowing `proposal_id="../escape"`
+    # to read .md files anywhere under the ebony root.
+    try:
+        proposal_id = _validate_id(proposal_id)
+    except ValueError as e:
+        return {"error": "validation_error", "field": "proposal_id", "message": str(e)}
+
     raw_ts = arguments.get("run_timestamp")
     if not raw_ts:
         return {"error": "missing_argument", "message": "run_timestamp is required"}
@@ -606,8 +668,8 @@ async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]
             "message": f"run_timestamp={raw_ts!r} is not a parseable ISO 8601 timestamp",
         }
 
-    target = _experiment_target_path(app.cfg.ebony_dir, proposal_id, ts)
-    if not target.is_file():
+    target = _find_experiment_file(app.cfg.ebony_dir, proposal_id, ts)
+    if target is None:
         return {
             "error": "not_found",
             "proposal_id": proposal_id,
@@ -619,10 +681,15 @@ async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]
     except ValueError as e:
         return {"error": "parse_error", "message": str(e)}
 
+    # Canonical run_timestamp from the filename (the filename is the
+    # authoritative key, not the frontmatter — they may differ for legacy
+    # v0.1.0 files where the frontmatter carried sub-second precision
+    # that the filename truncated away).
+    canonical = _parse_timestamp_filename(target.stem)
     fm = parsed.raw_frontmatter
     return {
         "proposal_id": fm.get("proposal_id", proposal_id),
-        "run_timestamp": fm.get("run_timestamp"),
+        "run_timestamp": canonical.isoformat() if canonical else fm.get("run_timestamp"),
         "input": fm.get("input"),
         "result": fm.get("result"),
         "links_to_proposal": fm.get("links_to_proposal"),
@@ -640,6 +707,9 @@ async def list_experiments(app: App, arguments: dict[str, Any]) -> dict[str, Any
     listed (`experiments/<proposal_id>/*.md`); otherwise all experiments
     across all proposals (`experiments/**/*.md`). Returns summary metadata
     — call `read_experiment` for the full input/result text.
+
+    Returns `{error: validation_error}` when `proposal_id` fails
+    path-component validation.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -650,6 +720,13 @@ async def list_experiments(app: App, arguments: dict[str, Any]) -> dict[str, Any
         return {"experiments": [], "count": 0}
 
     if proposal_id:
+        # Fix C1: validate `proposal_id` as a path component before forming
+        # the scoped glob root. v0.1.0 omitted this, letting
+        # `proposal_id="../"` walk siblings of `experiments/`.
+        try:
+            proposal_id = _validate_id(proposal_id)
+        except ValueError as e:
+            return {"error": "validation_error", "field": "proposal_id", "message": str(e)}
         scoped_root = exp_root / proposal_id
         if not scoped_root.is_dir():
             return {"experiments": [], "count": 0}
