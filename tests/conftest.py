@@ -9,6 +9,12 @@ client — the second module's lifespan startup blows up.
 The fix: a single session-scoped TestClient lives here; every test module
 that touches `/sse` reuses it.
 
+The parallel-execution tests (`test_parallel.py`) can't use this client —
+`TestClient` is sync (serializes requests on the caller side) AND its
+lifespan runs in a portal thread with its own event loop, which doesn't
+interop well with `httpx.AsyncClient` + `ASGITransport` from the test's
+own event loop. Those tests spin up a real uvicorn subprocess instead.
+
 No seed corpus is bootstrapped here — there's no indexer to warm up.
 Tests that need the canonical directory layout call the `bootstrap`
 tool themselves (via a module-autouse fixture). Tests that only touch
