@@ -6,7 +6,7 @@ Sister to [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp): smalt-mcp is 
 
 ## Status
 
-**v0.1 (B-5).** Full v0.1.0 tool surface complete — `status` + `bootstrap` + proposal CRUD + experiments + gaps all wired up. Schema models (`ProposalPage`, `ExperimentRecord`, `GapEntry`) live. Cross-server scenario tests + release polish in B-6 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
+**v0.1 (B-6).** Full v0.1.0 tool surface complete — `status` + `bootstrap` + proposal CRUD + experiments + gaps all wired up, plus cross-server scenario tests that simulate cobalt-grinding's two-substrate orchestration against a real smalt-mcp subprocess. Release polish + tag in B-7 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
 
 The v0.1.0 tool surface — 13 tools across 2 permission tiers:
 
@@ -107,6 +107,26 @@ The two storage substrates have different shapes:
 Bundling them produced a server that paid the search-stack cost for a workload that didn't need it, and made the two surfaces' release cadences coupled when they shouldn't be. Smalt-mcp's storage tools stabilize toward 1.0; ebony-enriching's schema will iterate as cobalt-grinding's cognitive systems land. Splitting them into two MCP children — both supervised by cogrindd — gives each substrate its own lifecycle.
 
 See [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) → *Decisions made* for the full rationale.
+
+## Tests
+
+Default (fast — ~0.3s, ~93 tests covering the full v0.1 tool surface in-process):
+
+```sh
+uv run pytest
+```
+
+**Integration tests** exercise both ebony-enriching AND a real smalt-mcp subprocess to verify the cobalt-grinding orchestration pattern (write proposal → validate → cross-substrate publish → mark applied). Default `pytest` skips them; run explicitly:
+
+```sh
+uv run pytest -m integration
+```
+
+The integration fixture resolves smalt-mcp's project directory in this order:
+1. `SMALT_MCP_PROJECT` env var (explicit override)
+2. `../../smalt-mcp/worktrees/main` relative to this repo (the [ParkviewLab worktree convention](https://github.com/ParkviewLab/dev-tools))
+
+Skipped with a clear message if neither resolves.
 
 ## Releasing
 
