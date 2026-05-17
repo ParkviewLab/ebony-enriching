@@ -9,11 +9,11 @@ client — the second module's lifespan startup blows up.
 The fix: a single session-scoped TestClient lives here; every test module
 that touches `/sse` reuses it.
 
-Unlike smalt-mcp's conftest, we don't bootstrap a seed corpus here —
-ebony-enriching has no indexer; the `bootstrap` tool (B-2) materializes
-the directory layout, and B-3+ exercises the proposal CRUD against it.
-B-1 only exposes `status`, which works fine against a fresh-empty
-EbonyEnriching dir (status reports `exists: false`).
+No seed corpus is bootstrapped here — there's no indexer to warm up.
+Tests that need the canonical directory layout call the `bootstrap`
+tool themselves (via a module-autouse fixture). Tests that only touch
+`status` work fine against the fresh-empty EbonyEnriching dir
+`tmp_path_factory.mktemp` produces.
 """
 
 from __future__ import annotations

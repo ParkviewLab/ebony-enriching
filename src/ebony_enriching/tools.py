@@ -6,10 +6,9 @@ nothing at the REMOVE_DESTRUCTIVE tier in v0). The server's
 `@mcp.list_tools()` filters by the caller's scope; `@mcp.call_tool()`
 delegates here via `dispatch()`.
 
-Same registration pattern as smalt-mcp's `tools.py` — adding a new tool
-is `ToolDef` entry + handler function; no edits to `server.py`.
-
-**B-5 closes the v0.1 surface (13 tools across 2 tiers).** Proposals + experiments + gaps are all wired up.
+Adding a new tool is `ToolDef` entry + handler function; no edits to
+`server.py`. v0.1 ships 13 tools across 2 tiers — proposals,
+experiments, and gaps all wired up.
 """
 
 from __future__ import annotations
@@ -120,7 +119,7 @@ async def bootstrap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
     Does not acquire `app.mutex` — bootstrap is initial setup that runs
     before any other writes; the mutex serializes RMW on existing state,
-    which doesn't apply here. Mirrors smalt-mcp's bootstrap.
+    which doesn't apply here.
     """
     ebony_root = app.cfg.ebony_dir
     ebony_root.mkdir(parents=True, exist_ok=True)
@@ -163,7 +162,7 @@ def _proposal_target_path(ebony_root: Path, proposal: ProposalPage) -> Path:
 
     Schema-related kinds (schema_addition / schema_drift / schema_removal)
     go to `proposals/schema/`; everything else goes to
-    `proposals/<proposed_by>/`. Port of smalt-mcp's pre-cleave version.
+    `proposals/<proposed_by>/`.
     """
     # Lazy import to avoid a top-level cycle (schema imports nothing from tools,
     # but the private constant lives there and is paired with the routing logic).
@@ -333,7 +332,16 @@ async def read_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     path = matches[0]
-    parsed = parse_doc(path)
+    try:
+        parsed = parse_doc(path)
+    except ValueError as e:
+        # S2 fix (v0.1.3+): same shape `read_experiment` uses; was previously
+        # uncaught, bubbling up to the generic tool_error wrapper.
+        return {
+            "error": "parse_error",
+            "path": str(path.relative_to(app.cfg.ebony_dir)),
+            "message": str(e),
+        }
     return {
         "id": proposal_id,
         "frontmatter": parsed.raw_frontmatter,
@@ -441,10 +449,10 @@ async def list_proposals(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 # ---- handler: update_proposal_status ----
 
 
-_STATUS_ENUMS: tuple[tuple[str, type, str], ...] = (
-    ("status", ProposalStatus, "status"),
-    ("test_status", TestStatus, "test_status"),
-    ("test_cost", TestCost, "test_cost"),
+_STATUS_ENUMS: tuple[tuple[str, type], ...] = (
+    ("status", ProposalStatus),
+    ("test_status", TestStatus),
+    ("test_cost", TestCost),
 )
 
 
@@ -453,9 +461,9 @@ async def update_proposal_status(app: App, arguments: dict[str, Any]) -> dict[st
 
     Validates each provided value parses to its StrEnum (doesn't enforce
     transition policy — lifecycle rules like `proposed → under_test →
-    validated` live in cobalt-grinding's agents per the ebony-as-lab-
-    notebook framing). RMW under the single-writer mutex so concurrent
-    callers can't lose updates.
+    validated` live in the agents using this server, not here). RMW
+    under the single-writer mutex so concurrent callers can't lose
+    updates.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -469,7 +477,7 @@ async def update_proposal_status(app: App, arguments: dict[str, Any]) -> dict[st
 
     # Validate each provided field against its enum up-front (before locking).
     validated: dict[str, str] = {}
-    for arg_name, enum_cls, _field in _STATUS_ENUMS:
+    for arg_name, enum_cls in _STATUS_ENUMS:
         raw = arguments.get(arg_name)
         if raw is None:
             continue
@@ -493,11 +501,19 @@ async def update_proposal_status(app: App, arguments: dict[str, Any]) -> dict[st
                 "matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in matches],
             }
         path = matches[0]
-        parsed = parse_doc(path)
+        try:
+            parsed = parse_doc(path)
+        except ValueError as e:
+            # S2 fix (v0.1.3+): match read_experiment's parse_error shape.
+            return {
+                "error": "parse_error",
+                "path": str(path.relative_to(app.cfg.ebony_dir)),
+                "message": str(e),
+            }
         fm = dict(parsed.raw_frontmatter)
-        for arg_name, _enum, field in _STATUS_ENUMS:
+        for arg_name, _enum in _STATUS_ENUMS:
             if arg_name in validated:
-                fm[field] = validated[arg_name]
+                fm[arg_name] = validated[arg_name]
         write_doc(path, fm, parsed.body)
 
     result: dict[str, Any] = {
@@ -563,12 +579,32 @@ async def supersede_proposal(app: App, arguments: dict[str, Any]) -> dict[str, A
 
         old_path, new_path = old_matches[0], new_matches[0]
 
-        old_parsed = parse_doc(old_path)
+        # S2 fix (v0.1.3+): match read_experiment's parse_error shape on
+        # either of the two parse_doc calls. Report which side failed so
+        # the human fixing it knows where to look.
+        try:
+            old_parsed = parse_doc(old_path)
+        except ValueError as e:
+            return {
+                "error": "parse_error",
+                "side": "old",
+                "path": str(old_path.relative_to(app.cfg.ebony_dir)),
+                "message": str(e),
+            }
+        try:
+            new_parsed = parse_doc(new_path)
+        except ValueError as e:
+            return {
+                "error": "parse_error",
+                "side": "new",
+                "path": str(new_path.relative_to(app.cfg.ebony_dir)),
+                "message": str(e),
+            }
+
         old_fm = dict(old_parsed.raw_frontmatter)
         old_fm["superseded_by"] = new_id
         write_doc(old_path, old_fm, old_parsed.body)
 
-        new_parsed = parse_doc(new_path)
         new_fm = dict(new_parsed.raw_frontmatter)
         new_fm["supersedes"] = old_id
         write_doc(new_path, new_fm, new_parsed.body)
@@ -671,7 +707,7 @@ async def write_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any
 
     No referential-integrity check: the experiment may reference a
     proposal_id that doesn't exist yet (or no longer exists). Audit-style
-    integrity is a separate concern (cobalt-grinding's Curate agent).
+    integrity is a separate concern on top of this substrate.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -774,7 +810,14 @@ async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]
     try:
         parsed = parse_doc(target)
     except ValueError as e:
-        return {"error": "parse_error", "message": str(e)}
+        # S2 alignment (v0.1.3+): include `path` so the shape matches the
+        # parse_error shape used by read_proposal / update_proposal_status /
+        # supersede_proposal.
+        return {
+            "error": "parse_error",
+            "path": str(target.relative_to(app.cfg.ebony_dir)),
+            "message": str(e),
+        }
 
     # Canonical run_timestamp from the filename (the filename is the
     # authoritative key, not the frontmatter — they may differ for legacy
@@ -865,8 +908,13 @@ async def add_gap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         return _not_initialized()
 
     query = arguments.get("query")
-    if not query:
-        return {"error": "missing_argument", "message": "query is required"}
+    # S4 fix (v0.1.3+): reject whitespace-only queries. `compute_gap_id`
+    # normalizes via strip+collapse, so `"   "` would hash the empty
+    # string and every whitespace-only query would collide at the same
+    # `e3b0c442` id with a blank visible bullet. Mirror the normalization
+    # here so the empty check happens against the same shape.
+    if not query or not " ".join(query.split()):
+        return {"error": "missing_argument", "message": "query is required (non-whitespace)"}
     why = arguments.get("why")
     source = arguments.get("source")
 
@@ -1170,9 +1218,8 @@ TOOLS: list[ToolDef] = [
                 "`id`, `status`. Optional: `test_status`, `test_cost`. Each "
                 "value is validated against its StrEnum but transition rules "
                 "(proposed → under_test → validated → applied | rejected) "
-                "are NOT enforced here — that policy lives in cobalt-grinding's "
-                "agents per the lab-notebook framing. RMW under single-writer "
-                "mutex."
+                "are NOT enforced here — that policy lives in the agents "
+                "using this server. RMW under single-writer mutex."
             ),
             inputSchema={
                 "type": "object",

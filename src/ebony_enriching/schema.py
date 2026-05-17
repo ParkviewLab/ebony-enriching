@@ -2,18 +2,13 @@
 
 Three model families, all forward-compatible (`extra="allow"`):
 
-- `ProposalPage` — the proposal-as-hypothesis frontmatter shape (lifecycle +
-  provenance metadata in frontmatter; observation/hypothesis/prediction/
-  test/reasoning in the body). Ported from smalt-mcp's pre-cleave
-  `schema.py` (commit `5c67c8d^`).
+- `ProposalPage` — the proposal-as-hypothesis frontmatter shape (lifecycle
+  + provenance metadata in frontmatter; observation / hypothesis /
+  prediction / test / reasoning in the body).
 - `ExperimentRecord` — a single test run for a proposal; lives under
   `experiments/<proposal-id>/<run-timestamp>.md`.
 - `GapEntry` — one bullet in `gaps.md`; carries a stable hash-id, query
   text, optional `why` + `source` context.
-
-See `cobalt-grinding/docs/north_star.md` → *How the Smalt evolves:
-hypothesis, test, truth* for the why; `cobalt-grinding/docs/plan.md` →
-*Proposal document shape and lifecycle* for the operational shape.
 """
 
 from __future__ import annotations
@@ -69,34 +64,35 @@ def _validate_id(value: str) -> str:
 
 
 class ProposalKind(StrEnum):
-    """Kind of proposal. Determines which downstream system / lifecycle applies.
+    """Kind of proposal. Determines which downstream lifecycle applies.
 
-    The full set is described in `cobalt-grinding/docs/plan.md` → "Proposal
-    document shape and lifecycle"; keep this enum in sync as new kinds land.
+    The vocabulary covers the standard knowledge-base proposal kinds; extend
+    as new kinds become useful (the model accepts unknown frontmatter via
+    `extra="allow"`, so adding a kind here is the only schema change).
     """
 
-    # Schema layer — Cogitate proposes additions; Curate flags drift/removal.
+    # Schema-layer changes — additions, drift, removals.
     SCHEMA_ADDITION = "schema_addition"
     SCHEMA_DRIFT = "schema_drift"
     SCHEMA_REMOVAL = "schema_removal"
 
-    # Graph structure — Cogitate constructs; Curate critiques.
+    # Graph-structure proposals.
     WIKI_EDGE = "wiki_edge"
     CONCEPT_MERGE = "concept_merge"
     NOVEL_CONCEPT = "novel_concept"
     CONTRADICTION = "contradiction"
     NOVEL_SYNTHESIS = "novel_synthesis"
 
-    # Corpus growth — Research proposes new sources.
+    # Corpus-growth proposals (adopting a new source).
     SOURCE_ADOPTION = "source_adoption"
 
-    # Capability surface — Toolsmith (Phase 3).
+    # Capability-surface proposals (tooling).
     TOOL_ADOPTION = "tool_adoption"
     TOOL_SPECIFICATION = "tool_specification"
     TOOLKIT_ADDITION = "toolkit_addition"
     TOOLKIT_REMOVAL = "toolkit_removal"
 
-    # Curate audits.
+    # Audit findings.
     ORPHAN = "orphan"
     DUPLICATE = "duplicate"
     BROKEN_LINK = "broken_link"
@@ -212,7 +208,12 @@ class ExperimentRecord(BaseModel):
     result: str = Field(description="outcome description (plain markdown)")
     links_to_proposal: str | None = Field(
         default=None,
-        description="optional explicit pointer back to the proposal's on-disk path",
+        description=(
+            "optional opaque pointer back to the proposal — free-form text "
+            "preserved on round-trip but not interpreted by any v0 tool. "
+            "If a future feature loads files from this value, that feature is "
+            "responsible for adding `_validate_id`/path-component validation."
+        ),
     )
 
     @field_validator("proposal_id")
