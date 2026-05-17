@@ -6,7 +6,7 @@ Sister to [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp): smalt-mcp is 
 
 ## Status
 
-**v0 scaffold (B-1).** Server runs; one MCP tool (`status`) wired up. Storage layout, schema models, and the rest of the tool surface land in B-2 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
+**v0.1 (B-2).** Server runs; `status` + `bootstrap` wired up; schema models (`ProposalPage`, `ExperimentRecord`, `GapEntry`) live. CRUD lands in B-3 → B-5; cross-server scenario tests + release in B-6 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
 
 The full v0.1.0 tool surface (target, when B-8 ships): 13 tools across 2 permission tiers.
 
@@ -64,13 +64,17 @@ Or use [`docker-compose.yml`](docker-compose.yml).
 
 HTTP responses are gzipped when the client sends `Accept-Encoding: gzip`.
 
-## MCP tools (B-1)
+## MCP tools (B-2)
 
 **Read-only:**
 
 - `status` — EbonyEnriching path, existence, single-writer mutex state. Always safe to call.
 
-**Coming in B-2 → B-8** — see the Status section above for the full target surface.
+**Read-write:**
+
+- `bootstrap` — initialize the canonical directory layout at `EBONY_ENRICHING_DIR`; drop in `gaps.md` / `schema/SCHEMA.md` / `schema/POLICY.md` / `config.toml` placeholders. Idempotent — reports only what was newly created.
+
+**Coming in B-3 → B-8** — see the Status section above for the full target surface.
 
 ## Configuration
 

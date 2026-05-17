@@ -88,14 +88,12 @@ async def list_tools() -> list[types.Tool]:
 @mcp.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
     try:
-        result = await tools_module.dispatch(
-            name, arguments, app=_app_instance, scope=_SERVER_SCOPE
-        )
+        result = await tools_module.dispatch(name, arguments, app=_app_instance, scope=_SERVER_SCOPE)
     except KeyError as e:
         return _ok({"error": "unknown_tool", "message": str(e)})
     except PermissionError as e:
         return _ok({"error": "forbidden", "message": str(e)})
-    except Exception as e:  # noqa: BLE001 — surface the error to the LLM as a tool_result
+    except Exception as e:  # surface the error to the LLM as a tool_result
         logger.exception("tool %s raised", name)
         return _ok({"error": "tool_error", "message": str(e), "type": type(e).__name__})
     return _ok(result)

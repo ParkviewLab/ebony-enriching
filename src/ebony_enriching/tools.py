@@ -9,8 +9,8 @@ delegates here via `dispatch()`.
 Same registration pattern as smalt-mcp's `tools.py` — adding a new tool
 is `ToolDef` entry + handler function; no edits to `server.py`.
 
-**B-1 ships only `status`.** B-2 adds `bootstrap`; B-3 adds the proposal
-CRUD; B-4 adds experiments; B-5 adds gaps.
+**B-2 ships `status` + `bootstrap`.** B-3 adds the proposal CRUD; B-4
+adds experiments; B-5 adds gaps.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from mcp import types
 
 from ebony_enriching.permissions import SCOPE_TIER, Scope
+from ebony_enriching.storage import paths
 
 if TYPE_CHECKING:
     from ebony_enriching.app import App
@@ -52,7 +53,89 @@ class ToolDef:
 def _not_initialized() -> dict[str, Any]:
     return {
         "error": "ebony_not_initialized",
-        "message": "EbonyEnriching directory not present; call bootstrap first (lands in B-2).",
+        "message": "EbonyEnriching directory not present; call bootstrap first.",
+    }
+
+
+# Bootstrap placeholders. Intentionally minimal — they exist so a fresh
+# EbonyEnriching has *something* at the canonical paths; downstream agents
+# and humans flesh them out over time (the docs are living artifacts).
+
+_GAPS_MD_PLACEHOLDER = """# gaps.md
+
+Open lab-notebook gaps; one bullet per gap. Managed by the `add_gap` and
+`remove_gap` tools (B-5). Each bullet carries a stable hash-id, the
+unanswered query, and optional context (`why`, `source`).
+"""
+
+_SCHEMA_MD_PLACEHOLDER = """# SCHEMA.md
+
+This is the human-readable narrative of the lab-notebook's models:
+proposals, experiments, gaps. Frontmatter shape, lifecycle states, test
+cost tiers. The machine-readable version lives in
+`ebony_enriching/schema.py` (the Pydantic models).
+
+This document is a **living artifact** — schema changes are themselves
+proposed and reviewed through the standard proposal mechanism.
+"""
+
+_POLICY_MD_PLACEHOLDER = """# POLICY.md
+
+This is the human-readable policy for how proposals are written and
+evaluated in this lab notebook: falsifiability of predictions, cost-tier
+discipline (when to auto-test vs. defer to user review), supersedes /
+superseded-by hygiene, when to transition `rejected` vs. let a proposal
+sit in `proposed`.
+
+Like SCHEMA.md, this document is **living** — policy changes are
+themselves proposed and reviewed through the standard proposal mechanism.
+"""
+
+_CONFIG_TOML_PLACEHOLDER = ""
+
+
+# ---- handler: bootstrap ----
+
+
+async def bootstrap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Initialize an empty EbonyEnriching at the configured `EBONY_ENRICHING_DIR`.
+
+    Creates the canonical directory layout and drops in `gaps.md` /
+    `schema/SCHEMA.md` / `schema/POLICY.md` / `config.toml` placeholders
+    where missing. Idempotent: existing directories and files are left
+    alone; the response reports only what was *newly* created.
+
+    Does not acquire `app.mutex` — bootstrap is initial setup that runs
+    before any other writes; the mutex serializes RMW on existing state,
+    which doesn't apply here. Mirrors smalt-mcp's bootstrap.
+    """
+    ebony_root = app.cfg.ebony_dir
+    ebony_root.mkdir(parents=True, exist_ok=True)
+
+    created_dirs: list[str] = []
+    for rel in paths.ALL_DIRS:
+        d = ebony_root / rel
+        if not d.exists():
+            d.mkdir(parents=True)
+            created_dirs.append(rel)
+
+    created_files: list[str] = []
+    for rel, content in (
+        ("gaps.md", _GAPS_MD_PLACEHOLDER),
+        ("schema/SCHEMA.md", _SCHEMA_MD_PLACEHOLDER),
+        ("schema/POLICY.md", _POLICY_MD_PLACEHOLDER),
+        ("config.toml", _CONFIG_TOML_PLACEHOLDER),
+    ):
+        target = ebony_root / rel
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            created_files.append(rel)
+
+    return {
+        "ebony_dir": str(ebony_root),
+        "created_dirs": created_dirs,
+        "created_files": created_files,
     }
 
 
@@ -80,6 +163,7 @@ async def status(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 TOOLS: list[ToolDef] = [
+    # ---- READ_ONLY ----
     ToolDef(
         spec=types.Tool(
             name="status",
@@ -98,6 +182,27 @@ TOOLS: list[ToolDef] = [
         ),
         scope=Scope.READ_ONLY,
         handler=status,
+    ),
+    # ---- READ_WRITE ----
+    ToolDef(
+        spec=types.Tool(
+            name="bootstrap",
+            description=(
+                "Initialize an empty EbonyEnriching at the configured "
+                "EBONY_ENRICHING_DIR. Creates the canonical directory layout "
+                "and drops in gaps.md / schema/SCHEMA.md / schema/POLICY.md / "
+                "config.toml placeholders. Idempotent — running it on an "
+                "existing EbonyEnriching is a no-op; the response reports "
+                "only what was newly created."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        scope=Scope.READ_WRITE,
+        handler=bootstrap,
     ),
 ]
 
