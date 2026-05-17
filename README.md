@@ -6,14 +6,14 @@ Sister to [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp): smalt-mcp is 
 
 ## Status
 
-**v0.1 (B-4).** Server runs; `status` + `bootstrap` + full proposal CRUD + experiments wired up; schema models (`ProposalPage`, `ExperimentRecord`, `GapEntry`) live. Gaps in B-5; cross-server scenario tests + release in B-6 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
+**v0.1 (B-5).** Full v0.1.0 tool surface complete — `status` + `bootstrap` + proposal CRUD + experiments + gaps all wired up. Schema models (`ProposalPage`, `ExperimentRecord`, `GapEntry`) live. Cross-server scenario tests + release polish in B-6 → B-8. Track B of CoGrind's plan — see [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) for the full design.
 
-The full v0.1.0 tool surface (target, when B-8 ships): 13 tools across 2 permission tiers.
+The v0.1.0 tool surface — 13 tools across 2 permission tiers:
 
 - **READ_ONLY (6):** `status`, `read_proposal`, `list_proposals`, `read_experiment`, `list_experiments`, `list_gaps`
 - **READ_WRITE (7):** `bootstrap`, `write_proposal`, `update_proposal_status`, `supersede_proposal`, `write_experiment`, `add_gap`, `remove_gap`
 
-No `REMOVE_DESTRUCTIVE` tier in v0 — lab-notebook semantics are append-only with status transitions (don't delete proposals, transition to `rejected`; don't delete experiments, they're the historical record).
+No `REMOVE_DESTRUCTIVE` tier in v0 — lab-notebook semantics are append-only with status transitions (don't delete proposals, transition to `rejected`; don't delete experiments, they're the historical record). Gaps are the one exception: `remove_gap` exists because a gap is a transient signal that gets resolved when the answering work lands.
 
 ## Run
 
@@ -64,7 +64,7 @@ Or use [`docker-compose.yml`](docker-compose.yml).
 
 HTTP responses are gzipped when the client sends `Accept-Encoding: gzip`.
 
-## MCP tools (B-4)
+## MCP tools (B-5 — full v0.1 surface)
 
 **Read-only:**
 
@@ -73,6 +73,7 @@ HTTP responses are gzipped when the client sends `Accept-Encoding: gzip`.
 - `list_proposals` — list proposals, optionally filtered by `system` (subdir), `status` (lifecycle state), or `kind` (`proposal_kind`). Malformed proposals appear with `valid: false` rather than being silently dropped.
 - `read_experiment` — read one experiment record by `(proposal_id, run_timestamp)`. Returns full input + result.
 - `list_experiments` — list experiments. With `proposal_id`, only that proposal's runs; without, all experiments. Returns summary metadata.
+- `list_gaps` — parse `gaps.md` and return all gap entries (id, query, created_at, optional why / source).
 
 **Read-write:**
 
@@ -81,8 +82,10 @@ HTTP responses are gzipped when the client sends `Accept-Encoding: gzip`.
 - `update_proposal_status` — update a proposal's lifecycle fields (`status`, optional `test_status`, `test_cost`) in-place. RMW under the single-writer mutex. Validates values against their StrEnum but does NOT enforce transition rules — that policy lives in cobalt-grinding's agents.
 - `supersede_proposal` — link two proposals: sets `superseded_by: new_id` on `old_id` and `supersedes: old_id` on `new_id`. Both must already exist; does not transition statuses.
 - `write_experiment` — record one run of a proposal's prediction test at `experiments/<proposal_id>/<run_timestamp>.md`. `run_timestamp` defaults to now (UTC). Doesn't check that the referenced proposal exists.
+- `add_gap` — record an unanswered query in `gaps.md`. `gap_id` is derived from the query (SHA-256 hex, truncated to 8 chars), so adding the same query twice is idempotent (returns `already_present: true`).
+- `remove_gap` — drop a gap bullet by id. Idempotent — unknown id returns `removed: 0`.
 
-**Coming in B-5 → B-8** — see the Status section above for the full target surface.
+**Coming in B-6 → B-8** — cross-server scenario tests with smalt-mcp; README polish; v0.1.0 release.
 
 ## Configuration
 

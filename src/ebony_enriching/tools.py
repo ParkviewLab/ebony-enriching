@@ -9,7 +9,7 @@ delegates here via `dispatch()`.
 Same registration pattern as smalt-mcp's `tools.py` — adding a new tool
 is `ToolDef` entry + handler function; no edits to `server.py`.
 
-**B-4 ships experiments on top of B-1+B-2+B-3.** B-5 adds gaps.
+**B-5 closes the v0.1 surface (13 tools across 2 tiers).** Proposals + experiments + gaps are all wired up.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from ebony_enriching.schema import (
     TestCost,
     TestStatus,
 )
+from ebony_enriching.storage import gaps as gaps_storage
 from ebony_enriching.storage import paths
 from ebony_enriching.storage.markdown import parse_doc, write_doc
 
@@ -674,6 +675,109 @@ async def list_experiments(app: App, arguments: dict[str, Any]) -> dict[str, Any
     return {"experiments": out, "count": len(out)}
 
 
+# ---- handler: add_gap ----
+
+
+async def add_gap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Record an unanswered query as a bullet in `gaps.md`.
+
+    `gap_id` is computed deterministically from the query (SHA-256 of
+    normalized text, truncated to 8 hex chars); calling `add_gap` twice
+    with the same query is idempotent — the second call returns the
+    existing entry without re-writing. `position` is the 1-indexed slot
+    in the gap list as of the response.
+
+    RMW under the single-writer mutex (gaps.md is a single shared file).
+    """
+    if not app.ebony_exists():
+        return _not_initialized()
+
+    query = arguments.get("query")
+    if not query:
+        return {"error": "missing_argument", "message": "query is required"}
+    why = arguments.get("why")
+    source = arguments.get("source")
+
+    gap_id = gaps_storage.compute_gap_id(query)
+    gaps_md = paths.gaps_md_path(app.cfg.ebony_dir)
+
+    with app.mutex.acquire("add_gap"):
+        existing = gaps_storage.parse_gaps(gaps_md.read_text(encoding="utf-8")) if gaps_md.exists() else []
+        existing_match = next((g for g in existing if g.id == gap_id), None)
+        if existing_match is not None:
+            position = existing.index(existing_match) + 1
+            return {
+                "gap_id": gap_id,
+                "position": position,
+                "already_present": True,
+            }
+
+        created_at = datetime.now(UTC)
+        entry_text = gaps_storage.format_gap_entry(
+            id=gap_id,
+            query=query,
+            created_at=created_at,
+            why=why,
+            source=source,
+        )
+        gaps_storage.append_gap_entry(gaps_md, entry_text)
+        position = len(existing) + 1
+
+    return {
+        "gap_id": gap_id,
+        "position": position,
+        "already_present": False,
+    }
+
+
+# ---- handler: list_gaps ----
+
+
+async def list_gaps(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Parse `gaps.md` and return all gap entries.
+
+    No filters in v0; the gap list is small enough to return whole.
+    """
+    if not app.ebony_exists():
+        return _not_initialized()
+
+    gaps_md = paths.gaps_md_path(app.cfg.ebony_dir)
+    if not gaps_md.exists():
+        return {"gaps": [], "count": 0}
+    parsed = gaps_storage.parse_gaps(gaps_md.read_text(encoding="utf-8"))
+    return {"gaps": [g.to_entry() for g in parsed], "count": len(parsed)}
+
+
+# ---- handler: remove_gap ----
+
+
+async def remove_gap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Drop a gap bullet from `gaps.md` by id.
+
+    Idempotent: removing an unknown id is a no-op and returns
+    `removed: 0`. RMW under the single-writer mutex.
+    """
+    if not app.ebony_exists():
+        return _not_initialized()
+
+    gap_id = arguments.get("gap_id")
+    if not gap_id:
+        return {"error": "missing_argument", "message": "gap_id is required"}
+
+    gaps_md = paths.gaps_md_path(app.cfg.ebony_dir)
+
+    with app.mutex.acquire("remove_gap"):
+        removed = gaps_storage.remove_gap_entry(gaps_md, gap_id)
+
+    if removed is None:
+        return {"gap_id": gap_id, "removed": 0}
+    return {
+        "gap_id": gap_id,
+        "removed": 1,
+        "query": removed.query,
+    }
+
+
 # ---- handler: status ----
 
 
@@ -808,6 +912,23 @@ TOOLS: list[ToolDef] = [
         ),
         scope=Scope.READ_ONLY,
         handler=list_experiments,
+    ),
+    ToolDef(
+        spec=types.Tool(
+            name="list_gaps",
+            description=(
+                "Parse `gaps.md` and return all gap entries (id, query, "
+                "created_at, optional why / source). No filter args in v0 — "
+                "the gap list is small enough to return whole."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        scope=Scope.READ_ONLY,
+        handler=list_gaps,
     ),
     # ---- READ_WRITE ----
     ToolDef(
@@ -944,6 +1065,55 @@ TOOLS: list[ToolDef] = [
         ),
         scope=Scope.READ_WRITE,
         handler=write_experiment,
+    ),
+    ToolDef(
+        spec=types.Tool(
+            name="add_gap",
+            description=(
+                "Record an unanswered query as a bullet in `gaps.md`. "
+                "`gap_id` is derived deterministically from the query "
+                "(SHA-256 hex, truncated to 8 chars), so calling twice with "
+                "the same query is idempotent — the second call returns the "
+                "existing entry with `already_present: true`. RMW under "
+                "single-writer mutex."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "the unanswered query (free text)"},
+                    "why": {
+                        "type": "string",
+                        "description": "optional context for why the gap matters",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "optional pointer (page id, conversation, etc.)",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        scope=Scope.READ_WRITE,
+        handler=add_gap,
+    ),
+    ToolDef(
+        spec=types.Tool(
+            name="remove_gap",
+            description=(
+                "Drop a gap bullet from `gaps.md` by id. Idempotent: "
+                "removing an unknown id is a no-op and returns "
+                "`removed: 0`. RMW under single-writer mutex."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "gap_id": {"type": "string", "description": "the gap's stable hash id"},
+                },
+                "required": ["gap_id"],
+            },
+        ),
+        scope=Scope.READ_WRITE,
+        handler=remove_gap,
     ),
 ]
 
