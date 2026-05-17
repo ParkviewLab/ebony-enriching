@@ -6,10 +6,9 @@ nothing at the REMOVE_DESTRUCTIVE tier in v0). The server's
 `@mcp.list_tools()` filters by the caller's scope; `@mcp.call_tool()`
 delegates here via `dispatch()`.
 
-Same registration pattern as smalt-mcp's `tools.py` — adding a new tool
-is `ToolDef` entry + handler function; no edits to `server.py`.
-
-**B-5 closes the v0.1 surface (13 tools across 2 tiers).** Proposals + experiments + gaps are all wired up.
+Adding a new tool is `ToolDef` entry + handler function; no edits to
+`server.py`. v0.1 ships 13 tools across 2 tiers — proposals,
+experiments, and gaps all wired up.
 """
 
 from __future__ import annotations
@@ -120,7 +119,7 @@ async def bootstrap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
     Does not acquire `app.mutex` — bootstrap is initial setup that runs
     before any other writes; the mutex serializes RMW on existing state,
-    which doesn't apply here. Mirrors smalt-mcp's bootstrap.
+    which doesn't apply here.
     """
     ebony_root = app.cfg.ebony_dir
     ebony_root.mkdir(parents=True, exist_ok=True)
@@ -163,7 +162,7 @@ def _proposal_target_path(ebony_root: Path, proposal: ProposalPage) -> Path:
 
     Schema-related kinds (schema_addition / schema_drift / schema_removal)
     go to `proposals/schema/`; everything else goes to
-    `proposals/<proposed_by>/`. Port of smalt-mcp's pre-cleave version.
+    `proposals/<proposed_by>/`.
     """
     # Lazy import to avoid a top-level cycle (schema imports nothing from tools,
     # but the private constant lives there and is paired with the routing logic).
@@ -462,9 +461,9 @@ async def update_proposal_status(app: App, arguments: dict[str, Any]) -> dict[st
 
     Validates each provided value parses to its StrEnum (doesn't enforce
     transition policy — lifecycle rules like `proposed → under_test →
-    validated` live in cobalt-grinding's agents per the ebony-as-lab-
-    notebook framing). RMW under the single-writer mutex so concurrent
-    callers can't lose updates.
+    validated` live in the agents using this server, not here). RMW
+    under the single-writer mutex so concurrent callers can't lose
+    updates.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -708,7 +707,7 @@ async def write_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any
 
     No referential-integrity check: the experiment may reference a
     proposal_id that doesn't exist yet (or no longer exists). Audit-style
-    integrity is a separate concern (cobalt-grinding's Curate agent).
+    integrity is a separate concern on top of this substrate.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -1219,9 +1218,8 @@ TOOLS: list[ToolDef] = [
                 "`id`, `status`. Optional: `test_status`, `test_cost`. Each "
                 "value is validated against its StrEnum but transition rules "
                 "(proposed → under_test → validated → applied | rejected) "
-                "are NOT enforced here — that policy lives in cobalt-grinding's "
-                "agents per the lab-notebook framing. RMW under single-writer "
-                "mutex."
+                "are NOT enforced here — that policy lives in the agents "
+                "using this server. RMW under single-writer mutex."
             ),
             inputSchema={
                 "type": "object",

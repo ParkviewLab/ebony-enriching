@@ -12,10 +12,7 @@ a lab-notebook write at a time. The serialized operations are:
 they go through it anyway for symmetry and to keep the discipline simple.
 
 Implementation: a plain `threading.Lock` wrapped in a context manager with
-a name so traces and logs make it obvious what's serializing. Copied from
-smalt-mcp's `CorpusWriteMutex`; the shape is the same even though the
-substrate underneath is different (filesystem-only here vs. LanceDB-backed
-there).
+a name, so traces and logs make it obvious what's serializing.
 
 **Invariant for handlers:** code inside `with mutex.acquire(name):` must
 remain synchronous (no `await`). Under uvicorn single-worker (the default

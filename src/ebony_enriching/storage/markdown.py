@@ -1,10 +1,9 @@
 """YAML frontmatter parse + dump for the lab notebook's markdown files.
 
-Same shape as smalt-mcp's `storage/markdown.py` but without the
-Pydantic-validation step (the lab notebook's models live in
-`ebony_enriching.schema`; callers validate at the tool layer, not in
-this module). This module is purely the "split YAML frontmatter from
-body" / "join them back" primitives.
+No Pydantic-validation step here — the lab notebook's models live in
+`ebony_enriching.schema`; callers validate at the tool layer. This
+module is purely the "split YAML frontmatter from body" / "join them
+back" primitives.
 """
 
 from __future__ import annotations

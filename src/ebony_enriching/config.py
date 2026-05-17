@@ -1,10 +1,7 @@
 """Static configuration. Pure leaf module — no internal imports.
 
-Env-driven, mirroring smalt-mcp's pattern. One `Config` dataclass; no
-embedding sub-config (ebony-enriching has no embedder).
-
-Default `PORT` is 35834 — one above smalt-mcp's 35833, deco-assaying's
-35832. Each ParkviewLab MCP server gets its own deterministic port.
+Env-driven. One `Config` dataclass; no embedding sub-config
+(ebony-enriching has no embedder). Default `PORT` is 35834.
 """
 
 from __future__ import annotations
@@ -21,7 +18,7 @@ except PackageNotFoundError:  # editable install before first build
 
 # ---- HTTP server ----
 
-PORT: int = int(os.environ.get("PORT", "35834"))  # 35834 = smalt-mcp's 35833 + 1
+PORT: int = int(os.environ.get("PORT", "35834"))
 HOST: str = os.environ.get("HOST", "0.0.0.0")
 
 
@@ -42,9 +39,8 @@ class Config:
 def load_config() -> Config:
     """Build a Config from environment variables.
 
-    `EBONY_ENRICHING_DIR` is the verbose form (mirrors `SMALT_DIR` for
-    parallel clarity across the ParkviewLab MCP children). The shorter
-    `EBONY_DIR` is accepted as a fallback for convenience.
+    `EBONY_ENRICHING_DIR` is the verbose form; `EBONY_DIR` is accepted
+    as a shorter alias for convenience.
     """
     raw = os.environ.get("EBONY_ENRICHING_DIR") or os.environ.get("EBONY_DIR") or "~/Documents/EbonyEnriching"
     ebony_dir = Path(raw).expanduser().resolve()
