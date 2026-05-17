@@ -239,7 +239,7 @@ Two permission tiers controlled by `EBONY_SCOPE`. A caller at tier N sees and ma
 - `status` — EbonyEnriching path, existence, single-writer mutex state. Always safe to call.
 - `read_proposal` — read a single proposal by id. Returns full frontmatter + body.
 - `list_proposals` — list proposals, optionally filtered by `system` (subdir), `status` (lifecycle state), or `kind` (`proposal_kind`). Malformed proposals appear with `valid: false` rather than being silently dropped.
-- `read_experiment` — read one experiment record by `(proposal_id, run_timestamp)`. Returns full input + result.
+- `read_experiment` — read one experiment record by `(proposal_id, run_timestamp)`. Returns full input + result. The returned `run_timestamp` is the canonical form (filename-derived) and matches what `write_experiment` and `list_experiments` return for the same experiment.
 - `list_experiments` — list experiments. With `proposal_id`, only that proposal's runs; without, all experiments. Returns summary metadata.
 - `list_gaps` — parse `gaps.md` and return all gap entries (id, query, created_at, optional why / source).
 
@@ -249,7 +249,7 @@ Two permission tiers controlled by `EBONY_SCOPE`. A caller at tier N sees and ma
 - `write_proposal` — write a proposal to `proposals/<subdir>/<id>.md`. Schema-related kinds (`schema_addition` / `schema_drift` / `schema_removal`) route to `proposals/schema/`; others to `proposals/<proposed_by>/`. Atomic write.
 - `update_proposal_status` — update a proposal's lifecycle fields (`status`, optional `test_status`, `test_cost`) in-place. RMW under the single-writer mutex. Validates values against their StrEnum but does NOT enforce transition rules — that policy lives in cobalt-grinding's agents.
 - `supersede_proposal` — link two proposals: sets `superseded_by: new_id` on `old_id` and `supersedes: old_id` on `new_id`. Both must already exist; does not transition statuses.
-- `write_experiment` — record one run of a proposal's prediction test at `experiments/<proposal_id>/<run_timestamp>.md`. `run_timestamp` defaults to now (UTC). Doesn't check that the referenced proposal exists.
+- `write_experiment` — record one run of a proposal's prediction test at `experiments/<proposal_id>/<run-timestamp-with-microseconds>.md`. `run_timestamp` defaults to now (UTC) and is recorded at microsecond precision so simultaneous writes don't collide. Doesn't check that the referenced proposal exists.
 - `add_gap` — record an unanswered query in `gaps.md`. `gap_id` is derived from the query (SHA-256 hex, truncated to 8 chars; lowercase + collapsed whitespace), so adding the same query twice is idempotent (returns `already_present: true`).
 - `remove_gap` — drop a gap bullet by id. Idempotent — unknown id returns `removed: 0`.
 
@@ -268,7 +268,7 @@ $EBONY_ENRICHING_DIR/
 │   └── converse/          # written by Converse (novelty detector)
 ├── experiments/
 │   └── <proposal-id>/
-│       └── <run-timestamp>.md
+│       └── <run-timestamp-with-microseconds>.md   # e.g. 2026-05-17T12-30-45-123000Z.md
 ├── gaps.md                # one bullet per open gap (managed by add_gap / remove_gap)
 ├── schema/
 │   ├── SCHEMA.md          # human-readable narrative of proposal / experiment / gap shape

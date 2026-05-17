@@ -47,8 +47,11 @@ def test_write_experiment_round_trip(mcp_client: TestClient):
         req_id=2010,
     )
     assert result["proposal_id"] == "exp-rt-prop"
-    # Filename-safe form on disk; ISO 8601 in the response.
-    assert result["path"] == "experiments/exp-rt-prop/2026-05-17T12-00-00Z.md"
+    # Filename includes microseconds (v0.1.1+ format); zero-µs case shows
+    # as `-000000Z`. Response `run_timestamp` is the canonical ISO form
+    # (no fractional second when µs==0).
+    assert result["path"] == "experiments/exp-rt-prop/2026-05-17T12-00-00-000000Z.md"
+    assert result["run_timestamp"] == "2026-05-17T12:00:00+00:00"
     assert (_ebony_dir(mcp_client) / result["path"]).is_file()
 
 
@@ -105,7 +108,7 @@ def test_write_experiment_normalizes_naive_timestamp_to_utc(mcp_client: TestClie
         },
         req_id=2050,
     )
-    assert result["path"] == "experiments/exp-naive-ts/2026-05-17T08-30-00Z.md"
+    assert result["path"] == "experiments/exp-naive-ts/2026-05-17T08-30-00-000000Z.md"
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +140,10 @@ def test_read_experiment_round_trip(mcp_client: TestClient):
     assert read["proposal_id"] == "exp-read-rt"
     assert read["input"] == "input text"
     assert read["result"] == "result text"
-    assert read["path"] == "experiments/exp-read-rt/2026-05-17T14-00-00Z.md"
+    assert read["path"] == "experiments/exp-read-rt/2026-05-17T14-00-00-000000Z.md"
+    # C3 fix: run_timestamp is the canonical form (filename-derived),
+    # consistent with write_experiment's response.
+    assert read["run_timestamp"] == "2026-05-17T14:00:00+00:00"
 
 
 def test_read_experiment_not_found(mcp_client: TestClient):
@@ -238,6 +244,140 @@ def test_list_experiments_unknown_proposal_returns_empty(mcp_client: TestClient)
     )
     assert result["experiments"] == []
     assert result["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for v0.1.0 critical findings (B-9 / C1, C2, C3)
+
+
+def test_read_experiment_rejects_path_traversal_in_proposal_id(mcp_client: TestClient):
+    """C1 regression: v0.1.0 took proposal_id straight into a filesystem
+    path with no validation, letting `proposal_id="../escape"` read .md
+    files anywhere under the ebony root. Must now reject with
+    validation_error."""
+    sid = _initialize(mcp_client)
+    result = _call_tool(
+        mcp_client,
+        sid,
+        "read_experiment",
+        {"proposal_id": "../escape", "run_timestamp": "2026-01-01T00:00:00+00:00"},
+        req_id=2200,
+    )
+    assert result["error"] == "validation_error"
+    assert result["field"] == "proposal_id"
+
+
+def test_list_experiments_rejects_path_traversal_in_proposal_id(mcp_client: TestClient):
+    """C1 regression: `list_experiments({"proposal_id": "../"})` used to
+    walk siblings of `experiments/` (gaps.md etc.). Must now reject."""
+    sid = _initialize(mcp_client)
+    result = _call_tool(
+        mcp_client,
+        sid,
+        "list_experiments",
+        {"proposal_id": "../"},
+        req_id=2210,
+    )
+    assert result["error"] == "validation_error"
+    assert result["field"] == "proposal_id"
+
+
+def test_write_experiment_subsecond_writes_are_distinct(mcp_client: TestClient):
+    """C2 regression: v0.1.0 dropped sub-second precision from the
+    filename, so two writes in the same second to the same proposal_id
+    silently overwrote each other. Both writes must now land at distinct
+    paths."""
+    sid = _initialize(mcp_client)
+    pid = "exp-subsecond"
+    ts1 = "2026-05-17T12:30:45.123000+00:00"
+    ts2 = "2026-05-17T12:30:45.999000+00:00"
+    w1 = _call_tool(
+        mcp_client,
+        sid,
+        "write_experiment",
+        {"proposal_id": pid, "run_timestamp": ts1, "input": "i1", "result": "r1"},
+        req_id=2220,
+    )
+    w2 = _call_tool(
+        mcp_client,
+        sid,
+        "write_experiment",
+        {"proposal_id": pid, "run_timestamp": ts2, "input": "i2", "result": "r2"},
+        req_id=2221,
+    )
+    assert w1["path"] != w2["path"]
+    listed = _call_tool(mcp_client, sid, "list_experiments", {"proposal_id": pid}, req_id=2222)
+    assert listed["count"] == 2
+    r1 = _call_tool(
+        mcp_client,
+        sid,
+        "read_experiment",
+        {"proposal_id": pid, "run_timestamp": ts1},
+        req_id=2223,
+    )
+    assert r1["input"] == "i1"  # first write is preserved, not overwritten by w2
+    assert r1["result"] == "r1"
+
+
+def test_run_timestamp_shape_consistent_across_tools(mcp_client: TestClient):
+    """C3 regression: write/read/list used to return three different
+    shapes for the same logical experiment. They must now all return
+    the canonical (filename-derived) form."""
+    sid = _initialize(mcp_client)
+    pid = "exp-canonical-ts"
+    # Use microsecond-precision input to make the round-trip non-trivial.
+    ts_input = "2026-05-17T16:00:00.500000+00:00"
+    w = _call_tool(
+        mcp_client,
+        sid,
+        "write_experiment",
+        {"proposal_id": pid, "run_timestamp": ts_input, "input": "i", "result": "r"},
+        req_id=2230,
+    )
+    r = _call_tool(
+        mcp_client,
+        sid,
+        "read_experiment",
+        {"proposal_id": pid, "run_timestamp": ts_input},
+        req_id=2231,
+    )
+    listed = _call_tool(mcp_client, sid, "list_experiments", {"proposal_id": pid}, req_id=2232)
+    # All three tools must report the same run_timestamp string.
+    assert w["run_timestamp"] == r["run_timestamp"]
+    assert w["run_timestamp"] == listed["experiments"][0]["run_timestamp"]
+
+
+def test_read_experiment_reads_v010_legacy_filename(mcp_client: TestClient):
+    """Backward-compat: a file written by v0.1.0 (second-precision
+    filename) must still be readable. Plants a file directly on disk in
+    the legacy format, then reads it via the public tool."""
+    sid = _initialize(mcp_client)
+    pid = "exp-legacy-fn"
+    # v0.1.0 wrote `<TS>Z.md` at second precision (no microsecond suffix).
+    legacy_file = _ebony_dir(mcp_client) / "experiments" / pid / "2026-05-17T18-00-00Z.md"
+    legacy_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.write_text(
+        "---\n"
+        f"proposal_id: {pid}\n"
+        "run_timestamp: '2026-05-17T18:00:00+00:00'\n"
+        "input: from v0.1.0\n"
+        "result: still readable\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    r = _call_tool(
+        mcp_client,
+        sid,
+        "read_experiment",
+        {"proposal_id": pid, "run_timestamp": "2026-05-17T18:00:00+00:00"},
+        req_id=2240,
+    )
+    assert r["input"] == "from v0.1.0"
+    assert r["result"] == "still readable"
+    # list_experiments also picks it up
+    listed = _call_tool(mcp_client, sid, "list_experiments", {"proposal_id": pid}, req_id=2241)
+    assert listed["count"] == 1
+    assert listed["experiments"][0]["run_timestamp"] == "2026-05-17T18:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------
