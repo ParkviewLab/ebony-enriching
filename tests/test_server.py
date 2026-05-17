@@ -39,25 +39,29 @@ def test_admin_version(mcp_client: TestClient):
 # MCP surface
 
 
-def test_mcp_initialize_lists_b4_tools(mcp_client: TestClient):
-    """B-4 ships experiments on top of B-1+B-2+B-3. B-5 adds gaps.
-    This test pins the v0 surface — when new tools land, update the expected set."""
+def test_mcp_initialize_lists_b5_tools(mcp_client: TestClient):
+    """B-5 closes the v0.1 surface — 13 tools across 2 tiers."""
     sid = _initialize(mcp_client)
     body, _ = _mcp(mcp_client, "tools/list", {}, req_id=2, session_id=sid)
     assert "result" in body, f"tools/list returned: {body!r}"
     names = {t["name"] for t in body["result"]["tools"]}
     assert names == {
+        # READ_ONLY (6)
         "status",
-        "bootstrap",
         "read_proposal",
         "list_proposals",
+        "read_experiment",
+        "list_experiments",
+        "list_gaps",
+        # READ_WRITE (7)
+        "bootstrap",
         "write_proposal",
         "update_proposal_status",
         "supersede_proposal",
-        "read_experiment",
-        "list_experiments",
         "write_experiment",
-    }, f"unexpected tool set at B-4: {names}"
+        "add_gap",
+        "remove_gap",
+    }, f"unexpected tool set at B-5: {names}"
 
 
 def test_status_tool(mcp_client: TestClient):
