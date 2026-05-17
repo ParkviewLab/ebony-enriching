@@ -407,6 +407,163 @@ def test_supersede_missing_new(mcp_client: TestClient):
 
 
 # ---------------------------------------------------------------------------
+# Regression tests for v0.1.0 / v0.1.1 should-fix findings (B-10)
+
+
+def test_list_proposals_surfaces_malformed_files_as_valid_false(mcp_client: TestClient):
+    """S1 regression: a `.md` with no frontmatter (or unparseable YAML)
+    used to be silently dropped by list_proposals despite its docstring
+    promising malformed proposals stay visible. Now they appear with
+    `valid: false` and a `parse_error` field."""
+    sid = _initialize(mcp_client)
+    broken = _ebony_dir(mcp_client) / "proposals" / "cogitate" / "prop-no-frontmatter.md"
+    broken.write_text("just a body, no YAML at all\n", encoding="utf-8")
+    listed = _call_tool(mcp_client, sid, "list_proposals", {}, req_id=5000)
+    entry = next((p for p in listed["proposals"] if p["id"] == "prop-no-frontmatter"), None)
+    assert entry is not None, "malformed proposal must appear in list_proposals"
+    assert entry["valid"] is False
+    assert "parse_error" in entry
+
+
+def test_bootstrap_safe_when_dir_pre_exists(mcp_client: TestClient):
+    """S5 regression: v0.1.1 bootstrap raised FileExistsError if a target
+    dir already existed (no exist_ok=True), so a concurrent racer hit
+    tool_error. Pre-create the dir manually, then bootstrap — must not
+    raise; instead, the dir is reported as not-newly-created."""
+    sid = _initialize(mcp_client)
+    target = _ebony_dir(mcp_client) / "proposals" / "research"
+    target.mkdir(parents=True, exist_ok=True)  # ensure present
+    result = _call_tool(mcp_client, sid, "bootstrap", {}, req_id=5010)
+    assert "error" not in result
+    # The dir was already there; bootstrap should not claim it created.
+    assert "proposals/research" not in result["created_dirs"]
+
+
+def test_supersede_proposal_rejects_self_reference(mcp_client: TestClient):
+    """S7 regression: v0.1.1 allowed supersede_proposal(p, p) which set
+    both supersedes and superseded_by on the same file. Now rejected."""
+    sid = _initialize(mcp_client)
+    pid = "prop-self-ref-attempt"
+    _call_tool(mcp_client, sid, "write_proposal", {"frontmatter": _frontmatter(pid=pid)}, req_id=5020)
+    result = _call_tool(
+        mcp_client,
+        sid,
+        "supersede_proposal",
+        {"old_id": pid, "new_id": pid},
+        req_id=5021,
+    )
+    assert result["error"] == "self_reference"
+
+
+def test_write_proposal_create_rejects_overwrite(mcp_client: TestClient):
+    """S10 regression: v0.1.0/v0.1.1 silently overwrote existing proposals,
+    letting a validated proposal get clobbered back to proposed by a
+    second write. Now mode='create' (default) rejects with
+    already_exists."""
+    sid = _initialize(mcp_client)
+    pid = "prop-no-overwrite"
+    _call_tool(mcp_client, sid, "write_proposal", {"frontmatter": _frontmatter(pid=pid)}, req_id=5030)
+    # Second write with default mode='create' must reject.
+    result = _call_tool(
+        mcp_client, sid, "write_proposal", {"frontmatter": _frontmatter(pid=pid)}, req_id=5031
+    )
+    assert result["error"] == "already_exists"
+    assert result["id"] == pid
+
+
+def test_write_proposal_update_mode_overwrites_existing(mcp_client: TestClient):
+    """S10 fix: mode='update' allows rewriting an existing proposal."""
+    sid = _initialize(mcp_client)
+    pid = "prop-explicit-update"
+    _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid=pid, title="original")},
+        req_id=5040,
+    )
+    updated = _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid=pid, title="rewritten"), "mode": "update"},
+        req_id=5041,
+    )
+    assert updated["mode"] == "update"
+    read = _call_tool(mcp_client, sid, "read_proposal", {"id": pid}, req_id=5042)
+    assert read["frontmatter"]["title"] == "rewritten"
+
+
+def test_write_proposal_update_requires_existing(mcp_client: TestClient):
+    """S10 fix: mode='update' on a non-existent proposal returns not_found,
+    not a silent create."""
+    sid = _initialize(mcp_client)
+    result = _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid="prop-update-nothing"), "mode": "update"},
+        req_id=5050,
+    )
+    assert result["error"] == "not_found"
+
+
+def test_write_proposal_persists_schema_defaults_to_disk(mcp_client: TestClient):
+    """S10 secondary regression: v0.1.0/v0.1.1 wrote the raw input
+    frontmatter dict to disk, so a caller omitting `status` left no
+    `status:` key in the file. Now the validated model (with defaults
+    applied) is what's persisted — `status: proposed` is explicit on
+    disk even when omitted at write time."""
+    sid = _initialize(mcp_client)
+    pid = "prop-default-status"
+    _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        # `status` deliberately omitted; Pydantic default is `proposed`
+        {"frontmatter": _frontmatter(pid=pid)},
+        req_id=5070,
+    )
+    # Read the raw file from disk and verify `status: proposed` is present.
+    on_disk = (_ebony_dir(mcp_client) / "proposals" / "cogitate" / f"{pid}.md").read_text(encoding="utf-8")
+    assert "status: proposed" in on_disk, f"expected `status: proposed` on disk; got:\n{on_disk}"
+    # And read_proposal surfaces it too.
+    read = _call_tool(mcp_client, sid, "read_proposal", {"id": pid}, req_id=5071)
+    assert read["frontmatter"]["status"] == "proposed"
+
+
+def test_write_proposal_rejects_cross_subdir_id_collision(mcp_client: TestClient):
+    """S11 regression: v0.1.0/v0.1.1 allowed the same id to be written
+    in different subdirs (e.g. one in `cogitate/`, one in `curate/`).
+    Every subsequent `read_proposal` then returned ambiguous_id with no
+    recovery tool. Now the second write is rejected with id_conflict."""
+    sid = _initialize(mcp_client)
+    pid = "prop-cross-subdir-id"
+    _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid=pid, kind="novel_concept", proposed_by="cogitate")},
+        req_id=5080,
+    )
+    # Same id, different proposed_by → different target subdir.
+    result = _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid=pid, kind="orphan", proposed_by="curate")},
+        req_id=5081,
+    )
+    assert result["error"] == "id_conflict"
+    assert result["id"] == pid
+    # First file should still exist; second one shouldn't.
+    cog = _ebony_dir(mcp_client) / "proposals" / "cogitate" / f"{pid}.md"
+    cur = _ebony_dir(mcp_client) / "proposals" / "curate" / f"{pid}.md"
+    assert cog.is_file()
+    assert not cur.is_file()
+
+
+# ---------------------------------------------------------------------------
 # Scope filtering — pin the new tools' tiers
 
 

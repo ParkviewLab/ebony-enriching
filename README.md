@@ -246,7 +246,7 @@ Two permission tiers controlled by `EBONY_SCOPE`. A caller at tier N sees and ma
 **`read_write` (+7 tools):**
 
 - `bootstrap` — initialize the canonical directory layout at `EBONY_ENRICHING_DIR`; drop in `gaps.md` / `schema/SCHEMA.md` / `schema/POLICY.md` / `config.toml` placeholders. Idempotent — reports only what was newly created.
-- `write_proposal` — write a proposal to `proposals/<subdir>/<id>.md`. Schema-related kinds (`schema_addition` / `schema_drift` / `schema_removal`) route to `proposals/schema/`; others to `proposals/<proposed_by>/`. Atomic write.
+- `write_proposal` — write a proposal to `proposals/<subdir>/<id>.md`. Schema-related kinds (`schema_addition` / `schema_drift` / `schema_removal`) route to `proposals/schema/`; others to `proposals/<proposed_by>/`. Atomic write. `mode='create'` (default) rejects overwrites with `already_exists`; `mode='update'` requires the file to exist. Rejects with `id_conflict` if the same id is present in a different subdir (ids are unique across all subdirs). The validated model (with schema defaults applied) is what lands on disk.
 - `update_proposal_status` — update a proposal's lifecycle fields (`status`, optional `test_status`, `test_cost`) in-place. RMW under the single-writer mutex. Validates values against their StrEnum but does NOT enforce transition rules — that policy lives in cobalt-grinding's agents.
 - `supersede_proposal` — link two proposals: sets `superseded_by: new_id` on `old_id` and `supersedes: old_id` on `new_id`. Both must already exist; does not transition statuses.
 - `write_experiment` — record one run of a proposal's prediction test at `experiments/<proposal_id>/<run-timestamp-with-microseconds>.md`. `run_timestamp` defaults to now (UTC) and is recorded at microsecond precision so simultaneous writes don't collide. Doesn't check that the referenced proposal exists.
@@ -285,8 +285,7 @@ $EBONY_ENRICHING_DIR/
 | `PORT` | `35834` | HTTP listen port. |
 | `HOST` | `0.0.0.0` | HTTP bind address. |
 | `EBONY_ENRICHING_DIR` | `~/Documents/EbonyEnriching` | Path to the lab notebook this server wraps. Call `bootstrap` once to materialize the canonical layout. `EBONY_DIR` is accepted as a shorter alias. |
-| `EBONY_SCOPE` | `read_write` | `read_only`, `read_write`, or `remove_destructive`. Tiered: caller at tier N sees every tool whose required scope is ≤ N. (`remove_destructive` is reserved — no v0 tool requires it.) |
-| `EBONY_INTERNAL_TOKEN` | *(unset)* | Reserved for future per-client scope routing; not yet enforced. |
+| `EBONY_SCOPE` | `read_write` | `read_only`, `read_write`, or `remove_destructive`. Server-wide (single tier per process); tiered so a caller at tier N sees every tool whose required scope is ≤ N. (`remove_destructive` is reserved — no v0 tool requires it.) To serve some callers read-only and others read-write, run two instances on different ports with different `EBONY_SCOPE` values. |
 
 ## Why a separate MCP server (not part of smalt-mcp)
 
