@@ -212,7 +212,12 @@ class ExperimentRecord(BaseModel):
     result: str = Field(description="outcome description (plain markdown)")
     links_to_proposal: str | None = Field(
         default=None,
-        description="optional explicit pointer back to the proposal's on-disk path",
+        description=(
+            "optional opaque pointer back to the proposal — free-form text "
+            "preserved on round-trip but not interpreted by any v0 tool. "
+            "If a future feature loads files from this value, that feature is "
+            "responsible for adding `_validate_id`/path-component validation."
+        ),
     )
 
     @field_validator("proposal_id")

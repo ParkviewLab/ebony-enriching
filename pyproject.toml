@@ -1,7 +1,7 @@
 [project]
 name = "ebony-enriching"
 version = "0.1.2"
-description = "MCP server: the lab notebook substrate (proposals + experiments + gap signals) for ParkviewLab's CoGrind project."
+description = "MCP server: an MCP the lab notebook"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
