@@ -1,8 +1,7 @@
 """FastAPI app construction + MCP server wiring + lifespan.
 
-Mounts a Streamable-HTTP MCP transport at `/sse` (same pattern as
-smalt-mcp and deco-assaying). Tools are defined in `ebony_enriching.tools`
-— this module only does the plumbing.
+Mounts a Streamable-HTTP MCP transport at `/sse`. Tools are defined in
+`ebony_enriching.tools` — this module only does the plumbing.
 """
 
 from __future__ import annotations
@@ -135,7 +134,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 # ---------------------------------------------------------------------------
-# /health + /admin/version (read-only ops endpoints, like smalt-mcp's)
+# /health + /admin/version (read-only ops endpoints)
 
 
 router = APIRouter()
@@ -179,9 +178,9 @@ app = FastAPI(
     title="ebony-enriching",
     version=VERSION,
     description=(
-        "MCP server: the lab notebook substrate (proposals + experiments + "
-        "gap signals) for ParkviewLab's CoGrind project. /admin/* endpoints "
-        "expose read-only ops information; tool calls go to /sse over MCP."
+        "MCP server: the lab notebook substrate — proposals + experiments + "
+        "gap signals. /admin/* endpoints expose read-only ops information; "
+        "tool calls go to /sse over MCP."
     ),
     lifespan=lifespan,
     docs_url="/docs",

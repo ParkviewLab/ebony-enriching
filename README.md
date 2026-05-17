@@ -4,7 +4,7 @@ MCP server: an MCP lab notebook.
 
 ## Status
 
-**v0.1 surface complete.** 13 tools across 2 permission tiers, covering the full proposal / experiment / gap lifecycle. End-to-end orchestration with smalt-mcp is exercised by the integration tests. Awaiting the v0.1.0 release tag.
+**v0.1 surface complete.** 13 tools across 2 permission tiers, covering the full proposal / experiment / gap lifecycle.
 
 - **READ_ONLY (6):** `status`, `read_proposal`, `list_proposals`, `read_experiment`, `list_experiments`, `list_gaps`
 - **READ_WRITE (7):** `bootstrap`, `write_proposal`, `update_proposal_status`, `supersede_proposal`, `write_experiment`, `add_gap`, `remove_gap`
@@ -13,11 +13,11 @@ No `REMOVE_DESTRUCTIVE` tier in v0 — lab-notebook semantics are append-only wi
 
 ## Lab notebook
 
-**ebony-enriching records; it doesn't decide.** Lifecycle policy (when to mark a proposal `rejected`, when to auto-test vs. defer to user review, what counts as falsifiability) lives in cobalt-grinding's cognitive agents reading the substrate's `POLICY.md`. The MCP tools enforce **storage** correctness (path safety, atomicity, schema validation) and nothing else.
+**ebony-enriching records; it doesn't decide.** Lifecycle policy (when to mark a proposal `rejected`, when to auto-test vs. defer to user review, what counts as falsifiability) lives in the agents using this server, guided by the substrate's `POLICY.md`. The MCP tools enforce **storage** correctness (path safety, atomicity, schema validation) and nothing else.
 
 ## Run
 
-Same five-mode pattern as [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp) and [`deco-assaying`](https://github.com/ParkviewLab/deco-assaying). Pick whichever fits.
+Five operating modes. Pick whichever fits.
 
 | Mode | When to use |
 |---|---|
@@ -37,7 +37,7 @@ Same five-mode pattern as [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp
 
 - **Docker mode (5)** needs `docker` (or compatible). The image bundles Python 3.13; nothing else on the host.
 
-In every mode the server listens on `PORT` (default `35834` — one above smalt-mcp's `35833`). Sanity-check it's up:
+In every mode the server listens on `PORT` (default `35834`). Sanity-check it's up:
 
 ```bash
 curl http://127.0.0.1:35834/health
@@ -235,25 +235,23 @@ Two permission tiers controlled by `EBONY_SCOPE`. A caller at tier N sees and ma
 
 - `bootstrap` — initialize the canonical directory layout at `EBONY_ENRICHING_DIR`; drop in `gaps.md` / `schema/SCHEMA.md` / `schema/POLICY.md` / `config.toml` placeholders. Idempotent — reports only what was newly created.
 - `write_proposal` — write a proposal to `proposals/<subdir>/<id>.md`. Schema-related kinds (`schema_addition` / `schema_drift` / `schema_removal`) route to `proposals/schema/`; others to `proposals/<proposed_by>/`. Atomic write. `mode='create'` (default) rejects overwrites with `already_exists`; `mode='update'` requires the file to exist. Rejects with `id_conflict` if the same id is present in a different subdir (ids are unique across all subdirs). The validated model (with schema defaults applied) is what lands on disk.
-- `update_proposal_status` — update a proposal's lifecycle fields (`status`, optional `test_status`, `test_cost`) in-place. RMW under the single-writer mutex. Validates values against their StrEnum but does NOT enforce transition rules — that policy lives in cobalt-grinding's agents.
+- `update_proposal_status` — update a proposal's lifecycle fields (`status`, optional `test_status`, `test_cost`) in-place. RMW under the single-writer mutex. Validates values against their StrEnum but does NOT enforce transition rules — that policy lives in the agents using this server.
 - `supersede_proposal` — link two proposals: sets `superseded_by: new_id` on `old_id` and `supersedes: old_id` on `new_id`. Both must already exist; does not transition statuses.
 - `write_experiment` — record one run of a proposal's prediction test at `experiments/<proposal_id>/<run-timestamp-with-microseconds>.md`. `run_timestamp` defaults to now (UTC) and is recorded at microsecond precision so simultaneous writes don't collide. Doesn't check that the referenced proposal exists.
 - `add_gap` — record an unanswered query in `gaps.md`. `gap_id` is derived from the query (SHA-256 hex, truncated to 8 chars; lowercase + collapsed whitespace), so adding the same query twice is idempotent (returns `already_present: true`).
 - `remove_gap` — drop a gap bullet by id. Idempotent — unknown id returns `removed: 0`.
-
-For the canonical-page storage surface (writing `EntityPage` / `ConceptPage` / `SourcePage` / `SynthesisPage`, hybrid search, link / claim management), use [`smalt-mcp`](https://github.com/ParkviewLab/smalt-mcp) — the library substrate. cobalt-grinding's cognitive agents orchestrate any cross-substrate flow.
 
 ## On-disk layout
 
 ```
 $EBONY_ENRICHING_DIR/
 ├── proposals/
-│   ├── schema/            # schema_addition / schema_drift / schema_removal kinds
-│   ├── cogitate/          # written by the Cogitate cognitive system
-│   ├── curate/            # written by Curate
-│   ├── research/          # written by Research
-│   ├── toolsmith/         # written by Toolsmith
-│   └── converse/          # written by Converse (novelty detector)
+│   ├── schema/            # schema_addition / schema_drift / schema_removal kinds (any proposer)
+│   ├── cogitate/          # subdir = `proposed_by` value
+│   ├── curate/
+│   ├── research/
+│   ├── toolsmith/
+│   └── converse/
 ├── experiments/
 │   └── <proposal-id>/
 │       └── <run-timestamp-with-microseconds>.md   # e.g. 2026-05-17T12-30-45-123000Z.md
@@ -275,48 +273,29 @@ $EBONY_ENRICHING_DIR/
 | `EBONY_ENRICHING_DIR` | `~/Documents/EbonyEnriching` | Path to the lab notebook this server wraps. Call `bootstrap` once to materialize the canonical layout. `EBONY_DIR` is accepted as a shorter alias. |
 | `EBONY_SCOPE` | `read_write` | `read_only`, `read_write`, or `remove_destructive`. Server-wide (single tier per process); tiered so a caller at tier N sees every tool whose required scope is ≤ N. (`remove_destructive` is reserved — no v0 tool requires it.) To serve some callers read-only and others read-write, run two instances on different ports with different `EBONY_SCOPE` values. |
 
-## Why a separate MCP server (not part of smalt-mcp)
-
-The two storage substrates have different shapes:
-
-- **Smalt** is LanceDB-backed (hybrid FTS + vector + alias search over thousands of pages); ships an embedder; the `smalt-mcp` package carries hundreds of MB of deps.
-- **Lab notebook** is filesystem-text-only (filesystem walks over hundreds of proposals/experiments/gaps); no embedder, no LanceDB; the `ebony-enriching` package is small.
-
-Bundling them produced a server that paid the search-stack cost for a workload that didn't need it, and made the two surfaces' release cadences coupled when they shouldn't be. smalt-mcp's storage tools stabilize toward 1.0; ebony-enriching's schema will iterate as cobalt-grinding's cognitive systems land. Splitting them into two MCP children — both supervised by `cogrindd` — gives each substrate its own lifecycle.
-
-See [`cobalt-grinding/docs/plan.md`](https://github.com/ParkviewLab/cobalt-grinding/blob/main/docs/plan.md) → *Decisions made* for the full rationale.
-
 ## Tests
-
-Default (fast — ~0.3s, the full v0.1 tool surface in-process):
 
 ```sh
 uv run pytest
 ```
 
-**Integration tests** exercise both ebony-enriching AND a real smalt-mcp subprocess to verify the cobalt-grinding orchestration pattern (write proposal → validate → cross-substrate publish → mark applied). Default `pytest` skips them; run explicitly:
-
-```sh
-uv run pytest -m integration
-```
-
-The integration fixture resolves smalt-mcp's project directory in this order:
-1. `SMALT_MCP_PROJECT` env var (explicit override)
-2. `../../smalt-mcp/worktrees/main` relative to this repo (the [ParkviewLab worktree convention](https://github.com/ParkviewLab/dev-tools))
-
-Skipped with a clear message if neither resolves.
+Fast (~0.3s); exercises the full v0.1 tool surface in-process.
 
 ## Releasing
 
-Tag-driven via the release workflow on push of a `v*` tag. Use the [`ParkviewLab/dev-tools`](https://github.com/ParkviewLab/dev-tools) helpers — they enforce the SSOT-tag-CI loop (`pyproject.toml` is the only place the version lives; CI verifies the pushed tag matches before publishing).
+Tag-driven via the release workflow on push of a `v*` tag. The CI gate enforces an SSOT contract: `pyproject.toml` is the only place the version lives, and CI verifies the pushed tag matches before publishing.
+
+To release a new version:
 
 ```sh
-git bump patch              # 0.1.0 → 0.1.1, committed
-git release                 # annotated tag v0.1.1 from pyproject.toml
+# 1. Bump pyproject.toml version manually (e.g. 0.1.0 → 0.1.1) and commit:
+$EDITOR pyproject.toml
+git commit -am "release v0.1.1"
+
+# 2. Tag and push:
+git tag -a v0.1.1 -m "release v0.1.1"
 git push --follow-tags      # CI fires
 ```
-
-Don't have the helpers? Install once: `git clone https://github.com/ParkviewLab/dev-tools.git ~/dev-tools && cd ~/dev-tools && ./install.sh`.
 
 ## License
 

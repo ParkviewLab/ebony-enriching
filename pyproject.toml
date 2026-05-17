@@ -1,16 +1,16 @@
 [project]
 name = "ebony-enriching"
 version = "0.1.2"
-description = "MCP server: an MCP the lab notebook"
+description = "MCP server: an MCP lab notebook"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Gary", email = "garycoding@gmail.com" }]
-# Deliberately small dep set vs. smalt-mcp's: ebony-enriching is text +
-# filesystem only. No LanceDB, no embedder, no LLM client. Queries are
-# filesystem walks; volumes (proposals / experiments / gaps) are small
-# enough even on a mature Smalt that this stays viable indefinitely.
+# Deliberately small dep set: ebony-enriching is text + filesystem only.
+# No database, no embedder, no LLM client. Queries are filesystem walks;
+# proposal / experiment / gap volumes are small enough for this to stay
+# viable indefinitely.
 dependencies = [
     "mcp[cli]>=1.27.0",
     "fastapi",
@@ -41,13 +41,6 @@ packages = ["src/ebony_enriching"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-# Integration tests are opt-in (require external resources — e.g. a
-# real smalt-mcp subprocess for the cross-server scenario tests).
-# Default `pytest` excludes them; run explicitly with `pytest -m integration`.
-addopts = "-m 'not integration'"
-markers = [
-    "integration: tests that exercise external services (smalt-mcp subprocess, etc.)",
-]
 
 [tool.ruff]
 line-length = 110
