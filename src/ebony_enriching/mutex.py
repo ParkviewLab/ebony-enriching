@@ -3,27 +3,34 @@
 Ebony-enriching's invariant: only one task may be in the *commit* phase of
 a lab-notebook write at a time. The serialized operations are:
 
-- `update_proposal_status` RMW (read frontmatter, update status fields, write back).
+- `write_proposal` (existence check + write — closes the create-race
+  between concurrent `mode='create'` callers for the same id).
+- `update_proposal_status` RMW (read frontmatter, update status fields,
+  write back).
 - `supersede_proposal` RMW (set both sides of the supersedes link).
 - `add_gap` / `remove_gap` (append-or-drop a bullet in `gaps.md`).
 
-`write_proposal` and `write_experiment` don't strictly need the mutex
-(each writes a single new file at a unique path — no contention), but
-they go through it anyway for symmetry and to keep the discipline simple.
+`write_experiment` doesn't take the mutex — each call writes a single new
+file at a microsecond-precision-unique path; no contention.
 
 Implementation: a plain `threading.Lock` wrapped in a context manager with
 a name, so traces and logs make it obvious what's serializing.
 
-**Invariant for handlers:** code inside `with mutex.acquire(name):` must
-remain synchronous (no `await`). Under uvicorn single-worker (the default
-deployment), every async handler runs on one event-loop thread, so a
-`threading.Lock` correctly serializes the synchronous critical sections.
-If a handler ever awaits while holding the lock, the lock is still held
-across the suspension point — fine for `threading.Lock` semantics, but
-the moment we start serving handlers on *multiple* threads (or want
-fairness across awaits), this should become an `asyncio.Lock` instead.
-Today no handler awaits inside the critical section; if you add one,
-revisit this module.
+**Concurrency pattern for handlers (W2, v0.1.4+):** the mutex-protected
+RMW handlers wrap their entire critical section in `asyncio.to_thread(...)`,
+so the `with mutex.acquire(name):` body runs on a worker thread. The
+**body itself must remain synchronous** (no `await` inside the `with`
+block). The `await` lives at the boundary — between the async handler
+and the worker thread that runs `_commit` — not inside the lock. This
+keeps `threading.Lock` the correct primitive (it serializes across the
+worker-thread pool), preserves the `mutex.holder` observability (the
+holder string is set in the same thread that owns the lock), and lets
+the event loop keep serving other tool requests while a single RMW is
+in flight on the worker thread.
+
+If a future handler ever needs to `await` *inside* the critical section,
+switch this to `asyncio.Lock` and re-derive the invariant — the present
+design doesn't support that.
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ experiments, and gaps all wired up.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -35,7 +36,13 @@ from ebony_enriching.schema import (
 )
 from ebony_enriching.storage import gaps as gaps_storage
 from ebony_enriching.storage import paths
-from ebony_enriching.storage.markdown import parse_doc, write_doc
+from ebony_enriching.storage.markdown import (
+    commit_doc_text,
+    parse_doc,
+    parse_doc_bytes,
+    serialize_doc,
+    write_doc,
+)
 
 if TYPE_CHECKING:
     from ebony_enriching.app import App
@@ -119,33 +126,39 @@ async def bootstrap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
     Does not acquire `app.mutex` — bootstrap is initial setup that runs
     before any other writes; the mutex serializes RMW on existing state,
-    which doesn't apply here.
+    which doesn't apply here. Whole-body dispatch via `asyncio.to_thread`
+    so the event loop stays responsive during the many small I/O ops.
     """
     ebony_root = app.cfg.ebony_dir
-    ebony_root.mkdir(parents=True, exist_ok=True)
 
-    created_dirs: list[str] = []
-    for rel in paths.ALL_DIRS:
-        d = ebony_root / rel
-        if not d.exists():
-            # S5 fix (v0.1.2+): exist_ok=True guards against a concurrent
-            # bootstrap creating the same dir between our exists-check and
-            # mkdir call (would otherwise raise FileExistsError → tool_error).
-            d.mkdir(parents=True, exist_ok=True)
-            created_dirs.append(rel)
+    def _commit() -> tuple[list[str], list[str]]:
+        ebony_root.mkdir(parents=True, exist_ok=True)
+        created_dirs: list[str] = []
+        for rel in paths.ALL_DIRS:
+            d = ebony_root / rel
+            if not d.exists():
+                # S5 fix (v0.1.2+): exist_ok=True guards against a concurrent
+                # bootstrap creating the same dir between our exists-check
+                # and mkdir call (would otherwise raise FileExistsError →
+                # tool_error).
+                d.mkdir(parents=True, exist_ok=True)
+                created_dirs.append(rel)
 
-    created_files: list[str] = []
-    for rel, content in (
-        ("gaps.md", _GAPS_MD_PLACEHOLDER),
-        ("schema/SCHEMA.md", _SCHEMA_MD_PLACEHOLDER),
-        ("schema/POLICY.md", _POLICY_MD_PLACEHOLDER),
-        ("config.toml", _CONFIG_TOML_PLACEHOLDER),
-    ):
-        target = ebony_root / rel
-        if not target.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            created_files.append(rel)
+        created_files: list[str] = []
+        for rel, content in (
+            ("gaps.md", _GAPS_MD_PLACEHOLDER),
+            ("schema/SCHEMA.md", _SCHEMA_MD_PLACEHOLDER),
+            ("schema/POLICY.md", _POLICY_MD_PLACEHOLDER),
+            ("config.toml", _CONFIG_TOML_PLACEHOLDER),
+        ):
+            target = ebony_root / rel
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                created_files.append(rel)
+        return created_dirs, created_files
+
+    created_dirs, created_files = await asyncio.to_thread(_commit)
 
     return {
         "ebony_dir": str(ebony_root),
@@ -172,13 +185,14 @@ def _proposal_target_path(ebony_root: Path, proposal: ProposalPage) -> Path:
     return paths.proposals_dir(ebony_root) / subdir / f"{proposal.id}.md"
 
 
-def _find_proposal_files_by_id(ebony_root: Path, proposal_id: str) -> list[Path]:
+async def _find_proposal_files_by_id(ebony_root: Path, proposal_id: str) -> list[Path]:
     """Return on-disk paths of proposals whose frontmatter `id` equals `proposal_id`.
 
-    Filesystem walk under `proposals/`; parses each `.md` via `parse_doc`
-    and matches against the parsed frontmatter `id` field (NOT the filename
-    — the routing puts `<id>.md` on disk so they match, but the source of
-    truth is the frontmatter).
+    Filesystem walk under `proposals/`; parses each `.md` via async
+    `parse_doc` (yields the event loop between files) and matches against
+    the parsed frontmatter `id` field (NOT the filename — the routing
+    puts `<id>.md` on disk so they match, but the source of truth is the
+    frontmatter).
 
     Returns `[]` (not found), `[path]` (unique), or multiple paths
     (collision; surfaced as `ambiguous_id` by callers).
@@ -186,12 +200,16 @@ def _find_proposal_files_by_id(ebony_root: Path, proposal_id: str) -> list[Path]
     root = paths.proposals_dir(ebony_root)
     if not root.exists():
         return []
+    # The `rglob` itself is sync but very cheap (it's an iterator that
+    # only stats dirs as you advance); wrapping it isn't worth the
+    # thread-pool dispatch.
+    candidates = sorted(root.rglob("*.md"))
     matches: list[Path] = []
-    for f in sorted(root.rglob("*.md")):
+    for f in candidates:
         if not f.is_file():
             continue
         try:
-            parsed = parse_doc(f)
+            parsed = await parse_doc(f)
         except ValueError:
             continue  # malformed frontmatter; skipped (list_proposals surfaces these)
         if parsed.raw_frontmatter.get("id") == proposal_id:
@@ -225,8 +243,11 @@ async def write_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
     applied), not the raw input dict. So callers omitting `status` etc.
     still get explicit defaults in the on-disk frontmatter.
 
-    No mutex — proposals are addressed by id; `mode` is the race guard
-    callers want.
+    **Concurrency** (v0.1.4+): the existence-check + write is wrapped in
+    the single-writer mutex on a worker thread. Two concurrent
+    `mode='create'` calls for the same id therefore reliably resolve to
+    one success + one `already_exists`, rather than racing past the
+    `is_file()` check and both clobbering the target.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -252,10 +273,11 @@ async def write_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
     target = _proposal_target_path(app.cfg.ebony_dir, proposal)
     target_rel = str(target.relative_to(app.cfg.ebony_dir))
 
-    # S11 fix (v0.1.2+): cross-subdir id collision. The same id existing
-    # in a different subdir would later return `ambiguous_id` from every
-    # `read_proposal` call, with no destructive tier to recover.
-    existing = _find_proposal_files_by_id(app.cfg.ebony_dir, proposal.id)
+    # Phase 1 (outside mutex): cross-subdir id collision check. The walk
+    # awaits internally so other tool calls can interleave during it.
+    # S11 fix (v0.1.2+): same id in a different subdir would later return
+    # `ambiguous_id` from every `read_proposal` call, with no recovery.
+    existing = await _find_proposal_files_by_id(app.cfg.ebony_dir, proposal.id)
     elsewhere = [p for p in existing if p.resolve() != target.resolve()]
     if elsewhere:
         return {
@@ -268,29 +290,36 @@ async def write_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    # S10 fix (v0.1.2+): explicit create vs update; default `create` rejects
-    # overwrites. v0.1.0/v0.1.1 silently overwrote, allowing a validated
-    # proposal to be clobbered back to `proposed` by a second write.
-    target_exists = target.is_file()
-    if mode == "create" and target_exists:
-        return {
-            "error": "already_exists",
-            "id": proposal.id,
-            "path": target_rel,
-            "message": (
-                "use `mode='update'` to rewrite, or `update_proposal_status` / "
-                "`supersede_proposal` for the common lifecycle operations"
-            ),
-        }
-    if mode == "update" and not target_exists:
-        return {"error": "not_found", "id": proposal.id, "path": target_rel}
-
     # S10 secondary fix (v0.1.2+): persist the validated model (with
-    # defaults applied), not the raw input. v0.1.0/v0.1.1 wrote the raw
-    # input dict, so a caller omitting `status` left no `status:` key on
-    # disk; readers had to know to apply schema defaults themselves.
+    # defaults applied), not the raw input.
     on_disk_fm = PROPOSAL_ADAPTER.dump_python(proposal, mode="json")
-    write_doc(target, on_disk_fm, body)
+    text = serialize_doc(on_disk_fm, body)
+
+    # Phase 2 (inside mutex, sync, on worker thread): existence check +
+    # write are atomic, closing the create-race that existed in
+    # v0.1.0-v0.1.3. The lock body is pure sync (no await); the W2
+    # invariant holds.
+    def _commit() -> dict[str, Any] | None:
+        with app.mutex.acquire("write_proposal"):
+            target_exists = target.is_file()
+            if mode == "create" and target_exists:
+                return {
+                    "error": "already_exists",
+                    "id": proposal.id,
+                    "path": target_rel,
+                    "message": (
+                        "use `mode='update'` to rewrite, or `update_proposal_status` / "
+                        "`supersede_proposal` for the common lifecycle operations"
+                    ),
+                }
+            if mode == "update" and not target_exists:
+                return {"error": "not_found", "id": proposal.id, "path": target_rel}
+            commit_doc_text(target, text)
+        return None
+
+    err = await asyncio.to_thread(_commit)
+    if err is not None:
+        return err
 
     return {
         "id": proposal.id,
@@ -321,7 +350,7 @@ async def read_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
     if not proposal_id:
         return {"error": "missing_argument", "message": "id is required"}
 
-    matches = _find_proposal_files_by_id(app.cfg.ebony_dir, proposal_id)
+    matches = await _find_proposal_files_by_id(app.cfg.ebony_dir, proposal_id)
     if not matches:
         return {"error": "not_found", "id": proposal_id}
     if len(matches) > 1:
@@ -333,7 +362,7 @@ async def read_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
     path = matches[0]
     try:
-        parsed = parse_doc(path)
+        parsed = await parse_doc(path)
     except ValueError as e:
         # S2 fix (v0.1.3+): same shape `read_experiment` uses; was previously
         # uncaught, bubbling up to the generic tool_error wrapper.
@@ -376,6 +405,14 @@ async def list_proposals(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         return {"proposals": [], "count": 0}
 
     out: list[dict[str, Any]] = []
+    # `rglob` is sync but cheap (lazy iterator over a small tree); per-file
+    # parses below are awaited so other tool calls can interleave.
+    # NOTE: a concurrent `write_proposal` can land mid-walk, so the listing
+    # may show proposal A in its pre-write state and proposal B in its
+    # post-write state. The proposals are independent files; no cross-file
+    # invariant is violated. This was always theoretically possible across
+    # multiple `list_proposals` calls; with concurrent handlers (v0.1.4+)
+    # it can also surface within a single call.
     for f in sorted(proposals_root.rglob("*.md")):
         if not f.is_file():
             continue
@@ -383,7 +420,7 @@ async def list_proposals(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         if system and (len(rel.parts) < 2 or rel.parts[0] != system):
             continue
         try:
-            parsed = parse_doc(f)
+            parsed = await parse_doc(f)
         except ValueError as e:
             # S1 fix (v0.1.2+): a `.md` with no frontmatter or malformed YAML
             # used to be silently dropped, contradicting this handler's
@@ -490,35 +527,44 @@ async def update_proposal_status(app: App, arguments: dict[str, Any]) -> dict[st
                 "message": f"{arg_name}={raw!r} is not a valid {enum_cls.__name__}",
             }
 
-    with app.mutex.acquire("update_proposal_status"):
-        matches = _find_proposal_files_by_id(app.cfg.ebony_dir, proposal_id)
-        if not matches:
-            return {"error": "not_found", "id": proposal_id}
-        if len(matches) > 1:
-            return {
-                "error": "ambiguous_id",
-                "id": proposal_id,
-                "matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in matches],
-            }
-        path = matches[0]
-        try:
-            parsed = parse_doc(path)
-        except ValueError as e:
-            # S2 fix (v0.1.3+): match read_experiment's parse_error shape.
-            return {
-                "error": "parse_error",
-                "path": str(path.relative_to(app.cfg.ebony_dir)),
-                "message": str(e),
-            }
-        fm = dict(parsed.raw_frontmatter)
-        for arg_name, _enum in _STATUS_ENUMS:
-            if arg_name in validated:
-                fm[arg_name] = validated[arg_name]
-        write_doc(path, fm, parsed.body)
+    # Phase 1 (outside mutex, async): locate the file. Other concurrent
+    # tool calls can interleave during the per-file parses.
+    matches = await _find_proposal_files_by_id(app.cfg.ebony_dir, proposal_id)
+    if not matches:
+        return {"error": "not_found", "id": proposal_id}
+    if len(matches) > 1:
+        return {
+            "error": "ambiguous_id",
+            "id": proposal_id,
+            "matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in matches],
+        }
+    path = matches[0]
+    path_rel = str(path.relative_to(app.cfg.ebony_dir))
+
+    # Phase 2 (inside mutex, sync, on worker thread): re-read bytes under
+    # the lock to close the TOCTOU between phase 1's lookup and the write
+    # below. The lock body is pure sync — the W2 invariant holds.
+    def _commit() -> tuple[str, dict[str, Any]] | dict[str, Any]:
+        with app.mutex.acquire("update_proposal_status"):
+            try:
+                parsed = parse_doc_bytes(path.read_bytes(), path)
+            except ValueError as e:
+                return {"error": "parse_error", "path": path_rel, "message": str(e)}
+            fm = dict(parsed.raw_frontmatter)
+            for arg_name, _enum in _STATUS_ENUMS:
+                if arg_name in validated:
+                    fm[arg_name] = validated[arg_name]
+            commit_doc_text(path, serialize_doc(fm, parsed.body))
+            return ("ok", fm)
+
+    outcome = await asyncio.to_thread(_commit)
+    if isinstance(outcome, dict):
+        return outcome
+    _, fm = outcome
 
     result: dict[str, Any] = {
         "id": proposal_id,
-        "path": str(path.relative_to(app.cfg.ebony_dir)),
+        "path": path_rel,
         "status": fm["status"],
     }
     if "test_status" in validated:
@@ -560,60 +606,62 @@ async def supersede_proposal(app: App, arguments: dict[str, Any]) -> dict[str, A
             "message": "old_id and new_id must differ",
         }
 
-    with app.mutex.acquire("supersede_proposal"):
-        old_matches = _find_proposal_files_by_id(app.cfg.ebony_dir, old_id)
-        new_matches = _find_proposal_files_by_id(app.cfg.ebony_dir, new_id)
-        missing: list[str] = []
-        if not old_matches:
-            missing.append(old_id)
-        if not new_matches:
-            missing.append(new_id)
-        if missing:
-            return {"error": "not_found", "missing": missing}
-        if len(old_matches) > 1 or len(new_matches) > 1:
-            return {
-                "error": "ambiguous_id",
-                "old_matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in old_matches],
-                "new_matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in new_matches],
-            }
+    # Phase 1 (outside mutex, async): locate both files in parallel.
+    old_matches, new_matches = await asyncio.gather(
+        _find_proposal_files_by_id(app.cfg.ebony_dir, old_id),
+        _find_proposal_files_by_id(app.cfg.ebony_dir, new_id),
+    )
+    missing: list[str] = []
+    if not old_matches:
+        missing.append(old_id)
+    if not new_matches:
+        missing.append(new_id)
+    if missing:
+        return {"error": "not_found", "missing": missing}
+    if len(old_matches) > 1 or len(new_matches) > 1:
+        return {
+            "error": "ambiguous_id",
+            "old_matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in old_matches],
+            "new_matches": [str(p.relative_to(app.cfg.ebony_dir)) for p in new_matches],
+        }
+    old_path, new_path = old_matches[0], new_matches[0]
+    old_rel = str(old_path.relative_to(app.cfg.ebony_dir))
+    new_rel = str(new_path.relative_to(app.cfg.ebony_dir))
 
-        old_path, new_path = old_matches[0], new_matches[0]
+    # Phase 2 (inside mutex, sync, on worker thread): two RMW writes
+    # under one lock acquisition. Re-reading bytes under the lock closes
+    # the TOCTOU between phase 1's lookup and phase 2's writes.
+    def _commit() -> dict[str, Any] | None:
+        with app.mutex.acquire("supersede_proposal"):
+            # S2 fix (v0.1.3+): match read_experiment's parse_error shape on
+            # either side. `side` field reports which file failed to parse.
+            try:
+                old_parsed = parse_doc_bytes(old_path.read_bytes(), old_path)
+            except ValueError as e:
+                return {"error": "parse_error", "side": "old", "path": old_rel, "message": str(e)}
+            try:
+                new_parsed = parse_doc_bytes(new_path.read_bytes(), new_path)
+            except ValueError as e:
+                return {"error": "parse_error", "side": "new", "path": new_rel, "message": str(e)}
 
-        # S2 fix (v0.1.3+): match read_experiment's parse_error shape on
-        # either of the two parse_doc calls. Report which side failed so
-        # the human fixing it knows where to look.
-        try:
-            old_parsed = parse_doc(old_path)
-        except ValueError as e:
-            return {
-                "error": "parse_error",
-                "side": "old",
-                "path": str(old_path.relative_to(app.cfg.ebony_dir)),
-                "message": str(e),
-            }
-        try:
-            new_parsed = parse_doc(new_path)
-        except ValueError as e:
-            return {
-                "error": "parse_error",
-                "side": "new",
-                "path": str(new_path.relative_to(app.cfg.ebony_dir)),
-                "message": str(e),
-            }
+            old_fm = dict(old_parsed.raw_frontmatter)
+            old_fm["superseded_by"] = new_id
+            commit_doc_text(old_path, serialize_doc(old_fm, old_parsed.body))
 
-        old_fm = dict(old_parsed.raw_frontmatter)
-        old_fm["superseded_by"] = new_id
-        write_doc(old_path, old_fm, old_parsed.body)
+            new_fm = dict(new_parsed.raw_frontmatter)
+            new_fm["supersedes"] = old_id
+            commit_doc_text(new_path, serialize_doc(new_fm, new_parsed.body))
+        return None
 
-        new_fm = dict(new_parsed.raw_frontmatter)
-        new_fm["supersedes"] = old_id
-        write_doc(new_path, new_fm, new_parsed.body)
+    err = await asyncio.to_thread(_commit)
+    if err is not None:
+        return err
 
     return {
         "old_id": old_id,
         "new_id": new_id,
-        "old_path": str(old_path.relative_to(app.cfg.ebony_dir)),
-        "new_path": str(new_path.relative_to(app.cfg.ebony_dir)),
+        "old_path": old_rel,
+        "new_path": new_rel,
     }
 
 
@@ -748,7 +796,7 @@ async def write_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any
     # have to teach themselves YAML tags.)
     on_disk_fm = dict(record_fm)
     on_disk_fm["run_timestamp"] = canonical_ts
-    write_doc(target, on_disk_fm, "")
+    await write_doc(target, on_disk_fm, "")
 
     return {
         "proposal_id": record.proposal_id,
@@ -808,7 +856,7 @@ async def read_experiment(app: App, arguments: dict[str, Any]) -> dict[str, Any]
         }
 
     try:
-        parsed = parse_doc(target)
+        parsed = await parse_doc(target)
     except ValueError as e:
         # S2 alignment (v0.1.3+): include `path` so the shape matches the
         # parse_error shape used by read_proposal / update_proposal_status /
@@ -868,9 +916,9 @@ async def list_experiments(app: App, arguments: dict[str, Any]) -> dict[str, Any
         scoped_root = exp_root / proposal_id
         if not scoped_root.is_dir():
             return {"experiments": [], "count": 0}
-        files = sorted(scoped_root.glob("*.md"))
+        files = await asyncio.to_thread(lambda: sorted(scoped_root.glob("*.md")))
     else:
-        files = sorted(exp_root.rglob("*.md"))
+        files = await asyncio.to_thread(lambda: sorted(exp_root.rglob("*.md")))
 
     out: list[dict[str, Any]] = []
     for f in files:
@@ -920,33 +968,35 @@ async def add_gap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
     gap_id = gaps_storage.compute_gap_id(query)
     gaps_md = paths.gaps_md_path(app.cfg.ebony_dir)
+    created_at = datetime.now(UTC)
+    entry_text = gaps_storage.format_gap_entry(
+        id=gap_id,
+        query=query,
+        created_at=created_at,
+        why=why,
+        source=source,
+    )
 
-    with app.mutex.acquire("add_gap"):
-        existing = gaps_storage.parse_gaps(gaps_md.read_text(encoding="utf-8")) if gaps_md.exists() else []
-        existing_match = next((g for g in existing if g.id == gap_id), None)
-        if existing_match is not None:
-            position = existing.index(existing_match) + 1
-            return {
-                "gap_id": gap_id,
-                "position": position,
-                "already_present": True,
-            }
+    # RMW the single shared `gaps.md`. Phase 2 is the entire critical
+    # section; the lock body is sync (W2 invariant), wrapped in
+    # `asyncio.to_thread` so the event loop stays responsive.
+    def _commit() -> tuple[bool, int]:
+        with app.mutex.acquire("add_gap"):
+            text = gaps_storage.read_gaps_text_sync(gaps_md)
+            existing = gaps_storage.parse_gaps(text)
+            existing_match = next((g for g in existing if g.id == gap_id), None)
+            if existing_match is not None:
+                return (True, existing.index(existing_match) + 1)
+            new_text = gaps_storage.append_gap_entry_to_text(text, entry_text)
+            gaps_storage.write_gaps_text_sync(gaps_md, new_text)
+            return (False, len(existing) + 1)
 
-        created_at = datetime.now(UTC)
-        entry_text = gaps_storage.format_gap_entry(
-            id=gap_id,
-            query=query,
-            created_at=created_at,
-            why=why,
-            source=source,
-        )
-        gaps_storage.append_gap_entry(gaps_md, entry_text)
-        position = len(existing) + 1
+    already_present, position = await asyncio.to_thread(_commit)
 
     return {
         "gap_id": gap_id,
         "position": position,
-        "already_present": False,
+        "already_present": already_present,
     }
 
 
@@ -962,9 +1012,10 @@ async def list_gaps(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         return _not_initialized()
 
     gaps_md = paths.gaps_md_path(app.cfg.ebony_dir)
-    if not gaps_md.exists():
+    text = await gaps_storage.read_gaps_text(gaps_md)
+    if not text:
         return {"gaps": [], "count": 0}
-    parsed = gaps_storage.parse_gaps(gaps_md.read_text(encoding="utf-8"))
+    parsed = gaps_storage.parse_gaps(text)
     return {"gaps": [g.to_entry() for g in parsed], "count": len(parsed)}
 
 
@@ -986,8 +1037,20 @@ async def remove_gap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
     gaps_md = paths.gaps_md_path(app.cfg.ebony_dir)
 
-    with app.mutex.acquire("remove_gap"):
-        removed = gaps_storage.remove_gap_entry(gaps_md, gap_id)
+    # RMW the single shared `gaps.md` under the mutex on a worker thread.
+    def _commit() -> gaps_storage.ParsedGap | None:
+        with app.mutex.acquire("remove_gap"):
+            if not gaps_md.exists():
+                return None
+            text = gaps_storage.read_gaps_text_sync(gaps_md)
+            result = gaps_storage.remove_gap_entry_from_text(text, gap_id)
+            if result is None:
+                return None
+            new_text, removed = result
+            gaps_storage.write_gaps_text_sync(gaps_md, new_text)
+            return removed
+
+    removed = await asyncio.to_thread(_commit)
 
     if removed is None:
         return {"gap_id": gap_id, "removed": 0}
