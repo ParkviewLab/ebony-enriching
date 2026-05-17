@@ -129,7 +129,10 @@ async def bootstrap(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
     for rel in paths.ALL_DIRS:
         d = ebony_root / rel
         if not d.exists():
-            d.mkdir(parents=True)
+            # S5 fix (v0.1.2+): exist_ok=True guards against a concurrent
+            # bootstrap creating the same dir between our exists-check and
+            # mkdir call (would otherwise raise FileExistsError → tool_error).
+            d.mkdir(parents=True, exist_ok=True)
             created_dirs.append(rel)
 
     created_files: list[str] = []
@@ -205,9 +208,26 @@ async def write_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
 
     Subdir = `schema` for schema_addition / schema_drift / schema_removal
     kinds; otherwise = `proposed_by`. Atomic at the filesystem level
-    (tmp-then-rename via `write_doc`). No mutex — proposals are write-by-id
-    (caller chooses the id), so RMW races don't apply; concurrent writes
-    for the *same* id are a caller-discipline concern.
+    (tmp-then-rename via `write_doc`).
+
+    `mode` (v0.1.2+):
+      - `"create"` (default): rejects with `already_exists` if the target
+        path already has a proposal. Use this for new proposals.
+      - `"update"`: requires the target path to exist; rewrites in place.
+        Use this to edit a proposal's frontmatter beyond just status (for
+        status / test fields, prefer `update_proposal_status`).
+
+    Always rejects with `id_conflict` if the same id is present in a
+    different subdir — proposal ids are unique across the whole namespace,
+    not just within one subdir (v0.1.0/v0.1.1 silently let this happen and
+    every subsequent read returned `ambiguous_id` with no recovery tool).
+
+    Persists the **validated** model to disk (with Pydantic defaults
+    applied), not the raw input dict. So callers omitting `status` etc.
+    still get explicit defaults in the on-disk frontmatter.
+
+    No mutex — proposals are addressed by id; `mode` is the race guard
+    callers want.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -217,17 +237,66 @@ async def write_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         return {"error": "missing_argument", "message": "frontmatter is required"}
     body = arguments.get("body") or ""
 
+    mode = arguments.get("mode", "create")
+    if mode not in ("create", "update"):
+        return {
+            "error": "invalid_value",
+            "field": "mode",
+            "message": f"mode={mode!r}; expected 'create' or 'update'",
+        }
+
     try:
         proposal = PROPOSAL_ADAPTER.validate_python(fm)
     except ValidationError as e:
         return {"error": "validation_error", "message": str(e)}
 
     target = _proposal_target_path(app.cfg.ebony_dir, proposal)
-    write_doc(target, fm, body)
+    target_rel = str(target.relative_to(app.cfg.ebony_dir))
+
+    # S11 fix (v0.1.2+): cross-subdir id collision. The same id existing
+    # in a different subdir would later return `ambiguous_id` from every
+    # `read_proposal` call, with no destructive tier to recover.
+    existing = _find_proposal_files_by_id(app.cfg.ebony_dir, proposal.id)
+    elsewhere = [p for p in existing if p.resolve() != target.resolve()]
+    if elsewhere:
+        return {
+            "error": "id_conflict",
+            "id": proposal.id,
+            "existing_paths": [str(p.relative_to(app.cfg.ebony_dir)) for p in elsewhere],
+            "message": (
+                f"a proposal with id {proposal.id!r} already exists in a different subdir; "
+                "ids must be unique across all subdirs"
+            ),
+        }
+
+    # S10 fix (v0.1.2+): explicit create vs update; default `create` rejects
+    # overwrites. v0.1.0/v0.1.1 silently overwrote, allowing a validated
+    # proposal to be clobbered back to `proposed` by a second write.
+    target_exists = target.is_file()
+    if mode == "create" and target_exists:
+        return {
+            "error": "already_exists",
+            "id": proposal.id,
+            "path": target_rel,
+            "message": (
+                "use `mode='update'` to rewrite, or `update_proposal_status` / "
+                "`supersede_proposal` for the common lifecycle operations"
+            ),
+        }
+    if mode == "update" and not target_exists:
+        return {"error": "not_found", "id": proposal.id, "path": target_rel}
+
+    # S10 secondary fix (v0.1.2+): persist the validated model (with
+    # defaults applied), not the raw input. v0.1.0/v0.1.1 wrote the raw
+    # input dict, so a caller omitting `status` left no `status:` key on
+    # disk; readers had to know to apply schema defaults themselves.
+    on_disk_fm = PROPOSAL_ADAPTER.dump_python(proposal, mode="json")
+    write_doc(target, on_disk_fm, body)
 
     return {
         "id": proposal.id,
-        "path": str(target.relative_to(app.cfg.ebony_dir)),
+        "mode": mode,
+        "path": target_rel,
         "subdir": target.parent.name,
         "proposal_kind": proposal.proposal_kind.value,
         "status": proposal.status.value,
@@ -307,8 +376,27 @@ async def list_proposals(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
             continue
         try:
             parsed = parse_doc(f)
-        except ValueError:
-            continue  # genuinely unparseable file (no frontmatter at all); skip
+        except ValueError as e:
+            # S1 fix (v0.1.2+): a `.md` with no frontmatter or malformed YAML
+            # used to be silently dropped, contradicting this handler's
+            # docstring promise that malformed proposals "stay visible".
+            # Surface it with valid=false + parse_error so the human fixing
+            # it can find it.
+            out.append(
+                {
+                    "id": f.stem,
+                    "title": None,
+                    "proposal_kind": None,
+                    "status": None,
+                    "proposed_by": None,
+                    "proposed_at": None,
+                    "path": str(f.relative_to(app.cfg.ebony_dir)),
+                    "subdir": rel.parts[0] if len(rel.parts) >= 2 else "",
+                    "valid": False,
+                    "parse_error": str(e),
+                }
+            )
+            continue
 
         md = parsed.raw_frontmatter
         try:
@@ -448,6 +536,13 @@ async def supersede_proposal(app: App, arguments: dict[str, Any]) -> dict[str, A
         return {"error": "missing_argument", "message": "old_id is required"}
     if not new_id:
         return {"error": "missing_argument", "message": "new_id is required"}
+    if old_id == new_id:
+        # S7 fix (v0.1.2+): self-reference would set both supersedes and
+        # superseded_by on the same file, creating a self-loop.
+        return {
+            "error": "self_reference",
+            "message": "old_id and new_id must differ",
+        }
 
     with app.mutex.acquire("supersede_proposal"):
         old_matches = _find_proposal_files_by_id(app.cfg.ebony_dir, old_id)
@@ -1034,10 +1129,15 @@ TOOLS: list[ToolDef] = [
             description=(
                 "Write a proposal to `proposals/<subdir>/<id>.md`. Subdir is "
                 "`schema` for schema_addition / schema_drift / schema_removal "
-                "kinds, otherwise `proposed_by`. Frontmatter is validated "
-                "against the ProposalPage schema; body is plain markdown "
-                "(Observation / Hypothesis / Prediction / Test / Reasoning "
-                "by convention). Atomic write via tmp-then-rename."
+                "kinds, otherwise `proposed_by`. `mode='create'` (default) "
+                "rejects overwrites with `already_exists`; `mode='update'` "
+                "requires the file to already exist. Always rejects with "
+                "`id_conflict` if the same id is present in a different "
+                "subdir. Frontmatter is validated against the ProposalPage "
+                "schema; body is plain markdown (Observation / Hypothesis / "
+                "Prediction / Test / Reasoning by convention). Atomic write "
+                "via tmp-then-rename. The validated model (with defaults "
+                "applied) is what lands on disk."
             ),
             inputSchema={
                 "type": "object",
@@ -1049,6 +1149,11 @@ TOOLS: list[ToolDef] = [
                     "body": {
                         "type": "string",
                         "description": "proposal body markdown (optional; defaults to empty)",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["create", "update"],
+                        "description": "create (default; reject overwrites) or update (require existing file)",
                     },
                 },
                 "required": ["frontmatter"],
