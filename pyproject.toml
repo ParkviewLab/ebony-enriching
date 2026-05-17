@@ -41,8 +41,12 @@ packages = ["src/ebony_enriching"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Integration tests are opt-in (require external resources — e.g. a
+# real smalt-mcp subprocess for the cross-server scenario tests).
+# Default `pytest` excludes them; run explicitly with `pytest -m integration`.
+addopts = "-m 'not integration'"
 markers = [
-    "integration: tests that exercise the running MCP server end-to-end",
+    "integration: tests that exercise external services (smalt-mcp subprocess, etc.)",
 ]
 
 [tool.ruff]
