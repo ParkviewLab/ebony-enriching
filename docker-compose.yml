@@ -1,0 +1,30 @@
+# ebony-enriching — MCP server for the lab-notebook substrate.
+#
+# Edit CHANGE-ME placeholders to fit your deployment. The default volume
+# (named) keeps the lab notebook under Docker's management; swap to the
+# bind-mount section if you want to browse it from the host directly.
+
+services:
+  ebony-enriching:
+    image: ghcr.io/parkviewlab/ebony-enriching:latest
+    container_name: ebony-enriching
+    restart: unless-stopped
+    ports:
+      - "35834:35834"
+    environment:
+      # Externally-reachable URL clients use (set in real deployments).
+      # Default is fine for local dev.
+      # PUBLIC_BASE_URL: "http://localhost:35834"
+
+      # Read-write by default for single-user dev; flip to read_only for
+      # shared deployments where only some clients should mutate the
+      # notebook.
+      EBONY_SCOPE: "read_write"
+
+    # Pick one — named volume (default) or bind mount:
+    volumes:
+      - ebony-data:/data
+      # - /CHANGE-ME/path/to/ebony:/data    # bind mount alternative
+
+volumes:
+  ebony-data:
