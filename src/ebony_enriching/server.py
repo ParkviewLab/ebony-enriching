@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """FastAPI app construction + MCP server wiring + lifespan.
 
 Mounts a Streamable-HTTP MCP transport at `/sse`. Tools are defined in

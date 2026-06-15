@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """YAML frontmatter parse + dump for the lab notebook's markdown files.
 
 No Pydantic-validation step here — the lab notebook's models live in

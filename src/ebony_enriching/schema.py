@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Pydantic models for ebony-enriching's lab-notebook schema.
 
 Three model families, all forward-compatible (`extra="allow"`):

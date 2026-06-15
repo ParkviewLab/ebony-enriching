@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # ebony-enriching — MCP server for the lab-notebook substrate.
 #
 # Edit CHANGE-ME placeholders to fit your deployment. The default volume
