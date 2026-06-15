@@ -34,3 +34,7 @@ Thumbs.db
 # Secrets
 .env
 .env.*
+
+# Transient release artifact: scripts/generate_changelog.py writes this for
+# `gh release create --notes-file`; it's regenerated every release, never committed.
+release-body.md
