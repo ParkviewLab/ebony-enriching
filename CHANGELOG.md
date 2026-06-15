@@ -29,6 +29,16 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v0.1.6] - 2026-06-14
+
+### Highlights
+
+This release is housekeeping: the project adopts the ParkviewLab handbook conventions (canonical CI workflows, SPDX headers, contributor docs) and relicenses from MIT to the dual MIT OR Apache-2.0 license, with root LICENSE-MIT and LICENSE-APACHE files. A flaky wall-clock throughput assertion is now skipped on CI runners. There are no functional or dependency changes.
+
+### Docs
+
+- V0.1.5 [skip ci] (ae1e245)
+
 ## [v0.1.5] - 2026-06-14
 
 ### Highlights
