@@ -297,6 +297,22 @@ git tag -a v0.1.1 -m "release v0.1.1"
 git push --follow-tags      # CI fires
 ```
 
+### Commit message convention
+
+After the publish jobs, a **changelog** job generates the new `CHANGELOG.md` section — an LLM-written "Highlights" paragraph plus a [`git-cliff`](https://git-cliff.org/) categorized commit list — commits it back to `main`, and creates the GitHub Release with the same content as its body. Categorization uses [Conventional Commits](https://www.conventionalcommits.org/) prefixes (see [`cliff.toml`](cliff.toml)):
+
+| Prefix | Section | Notes |
+|---|---|---|
+| `feat:` | Features | user-visible |
+| `fix:` | Bug fixes | user-visible |
+| `perf:` | Performance | user-visible |
+| `refactor:` | Refactor | |
+| `docs:` | Docs | |
+| `test:` | Tests | |
+| `chore:` / `ci:` / `build:` / `style:` | _(dropped)_ | not surfaced in CHANGELOG |
+
+Squash-merge PRs use the PR title as the commit subject — so the **PR title** is what needs the prefix. Commits without a recognised prefix are silently dropped from the CHANGELOG (still in git history). The "Highlights" paragraph requires the `ANTHROPIC_API_KEY` org-level secret; if the LLM call fails, a placeholder lands and the release still ships.
+
 ## License
 
 MIT. See `LICENSE`.
