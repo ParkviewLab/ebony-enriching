@@ -29,6 +29,20 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v0.1.7] - 2026-06-14
+
+### Highlights
+
+This release pins `starlette>=1.0.1` to address GHSA-86qp-5c8j-p5mr (Host-header validation); the lockfile now resolves starlette 1.3.1. There are no code or API changes.
+
+### Bug fixes
+
+- Pin starlette>=1.0.1 (GHSA-86qp-5c8j-p5mr Host-header validation) (#19) (0176b32)
+
+### Docs
+
+- V0.1.6 [skip ci] (8378323)
+
 ## [v0.1.6] - 2026-06-14
 
 ### Highlights
