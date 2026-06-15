@@ -567,6 +567,69 @@ def test_write_proposal_rejects_cross_subdir_id_collision(mcp_client: TestClient
     assert not cur.is_file()
 
 
+def test_write_proposal_rejects_case_variant_same_subdir(mcp_client: TestClient):
+    """Cross-platform id safety: ids differing only by case are one identity.
+    Creating `CaseProp` then `caseprop` in the same subdir must reject the
+    second — on a case-insensitive filesystem they're the same file, so allowing
+    both would silently overwrite (or, on case-sensitive Linux, create a pair
+    that collapses to one on sync)."""
+    sid = _initialize(mcp_client)
+    _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid="CaseProp", proposed_by="cogitate")},
+        req_id=5090,
+    )
+    result = _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid="caseprop", proposed_by="cogitate")},
+        req_id=5091,
+    )
+    assert result["error"] in {"already_exists", "id_conflict"}, result
+
+
+def test_write_proposal_rejects_case_variant_cross_subdir(mcp_client: TestClient):
+    """The case-insensitive uniqueness check also spans subdirs: `CrossCase` in
+    cogitate then `crosscase` in curate is rejected as id_conflict (the S11 trap,
+    re-opened by case-variant ids), and the second file is not created."""
+    sid = _initialize(mcp_client)
+    _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid="CrossCase", kind="novel_concept", proposed_by="cogitate")},
+        req_id=5092,
+    )
+    result = _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid="crosscase", kind="orphan", proposed_by="curate")},
+        req_id=5093,
+    )
+    assert result["error"] == "id_conflict", result
+    assert not (_ebony_dir(mcp_client) / "proposals" / "curate" / "crosscase.md").is_file()
+
+
+def test_read_proposal_is_case_insensitive(mcp_client: TestClient):
+    """A proposal written as `MixedCaseRead` is readable by any case variant —
+    id resolution is case-insensitive end to end."""
+    sid = _initialize(mcp_client)
+    _call_tool(
+        mcp_client,
+        sid,
+        "write_proposal",
+        {"frontmatter": _frontmatter(pid="MixedCaseRead", proposed_by="cogitate")},
+        req_id=5094,
+    )
+    read = _call_tool(mcp_client, sid, "read_proposal", {"id": "mixedcaseread"}, req_id=5095)
+    assert read.get("error") is None, read
+    assert read["frontmatter"]["id"] == "MixedCaseRead"
+
+
 # ---------------------------------------------------------------------------
 # Regression tests for v0.1.2 / v0.1.3 polish findings (B-11)
 
