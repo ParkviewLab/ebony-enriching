@@ -52,5 +52,7 @@ def mcp_client(tmp_path_factory) -> TestClient:
 
     from ebony_enriching.server import app
 
-    with TestClient(app) as c:
+    # base_url → Host: localhost, which the transport's Host allowlist accepts
+    # (the TestClient default `http://testserver` would now be rejected with 421).
+    with TestClient(app, base_url="http://localhost") as c:
         yield c

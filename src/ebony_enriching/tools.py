@@ -189,13 +189,24 @@ def _proposal_target_path(ebony_root: Path, proposal: ProposalPage) -> Path:
     return paths.proposals_dir(ebony_root) / subdir / f"{proposal.id}.md"
 
 
-async def _find_proposal_files_by_id(ebony_root: Path, proposal_id: str) -> list[Path]:
-    """Return on-disk paths of proposals whose frontmatter `id` equals `proposal_id`.
+def _id_matches(raw_frontmatter: dict[str, Any], target_key: str) -> bool:
+    """Case-insensitive id match. `target_key` is an already-casefolded id.
 
-    Filesystem walk under `proposals/`; parses each `.md` via async
-    `parse_doc` (yields the event loop between files) and matches against
-    the parsed frontmatter `id` field (NOT the filename — the routing
-    puts `<id>.md` on disk so they match, but the source of truth is the
+    Ids are compared with `casefold()` so values differing only by case map to
+    one logical proposal — on a case-insensitive filesystem (macOS/Windows)
+    `Foo.md` and `foo.md` are the same file, so treating them as distinct would
+    let a notebook authored on case-sensitive Linux silently collapse on sync.
+    """
+    return str(raw_frontmatter.get("id", "")).casefold() == target_key
+
+
+async def _find_proposal_files_by_id(ebony_root: Path, proposal_id: str) -> list[Path]:
+    """Return on-disk paths of proposals whose frontmatter `id` matches `proposal_id`.
+
+    Matching is **case-insensitive** (see `_id_matches`). Filesystem walk under
+    `proposals/`; parses each `.md` via async `parse_doc` (yields the event loop
+    between files) and matches the parsed frontmatter `id` field (NOT the
+    filename — the routing writes `<id>.md`, but the source of truth is the
     frontmatter).
 
     Returns `[]` (not found), `[path]` (unique), or multiple paths
@@ -208,6 +219,7 @@ async def _find_proposal_files_by_id(ebony_root: Path, proposal_id: str) -> list
     # only stats dirs as you advance); wrapping it isn't worth the
     # thread-pool dispatch.
     candidates = sorted(root.rglob("*.md"))
+    target_key = proposal_id.casefold()
     matches: list[Path] = []
     for f in candidates:
         if not f.is_file():
@@ -216,7 +228,31 @@ async def _find_proposal_files_by_id(ebony_root: Path, proposal_id: str) -> list
             parsed = await parse_doc(f)
         except ValueError:
             continue  # malformed frontmatter; skipped (list_proposals surfaces these)
-        if parsed.raw_frontmatter.get("id") == proposal_id:
+        if _id_matches(parsed.raw_frontmatter, target_key):
+            matches.append(f)
+    return matches
+
+
+def _find_proposal_files_by_id_sync(ebony_root: Path, proposal_id: str) -> list[Path]:
+    """Synchronous, case-insensitive variant of `_find_proposal_files_by_id`.
+
+    For use **inside** the single-writer mutex (the lock body must stay sync —
+    no `await` — per the W2 invariant), so `write_proposal` can check id
+    uniqueness and write the file atomically under one lock acquisition.
+    """
+    root = paths.proposals_dir(ebony_root)
+    if not root.exists():
+        return []
+    target_key = proposal_id.casefold()
+    matches: list[Path] = []
+    for f in sorted(root.rglob("*.md")):
+        if not f.is_file():
+            continue
+        try:
+            parsed = parse_doc_bytes(f.read_bytes(), f)
+        except ValueError:
+            continue  # malformed frontmatter; skipped
+        if _id_matches(parsed.raw_frontmatter, target_key):
             matches.append(f)
     return matches
 
@@ -238,20 +274,21 @@ async def write_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
         Use this to edit a proposal's frontmatter beyond just status (for
         status / test fields, prefer `update_proposal_status`).
 
-    Always rejects with `id_conflict` if the same id is present in a
-    different subdir — proposal ids are unique across the whole namespace,
-    not just within one subdir (v0.1.0/v0.1.1 silently let this happen and
-    every subsequent read returned `ambiguous_id` with no recovery tool).
+    Always rejects with `id_conflict` if the same id (compared
+    case-insensitively) is present in a different subdir — proposal ids are
+    unique across the whole namespace, not just within one subdir (v0.1.0/v0.1.1
+    silently let this happen and every subsequent read returned `ambiguous_id`
+    with no recovery tool).
 
     Persists the **validated** model to disk (with Pydantic defaults
     applied), not the raw input dict. So callers omitting `status` etc.
     still get explicit defaults in the on-disk frontmatter.
 
-    **Concurrency** (v0.1.4+): the existence-check + write is wrapped in
-    the single-writer mutex on a worker thread. Two concurrent
-    `mode='create'` calls for the same id therefore reliably resolve to
-    one success + one `already_exists`, rather than racing past the
-    `is_file()` check and both clobbering the target.
+    **Concurrency** (v0.1.4+; uniqueness check moved in-lock since): the
+    id-uniqueness check *and* the write run inside the single-writer mutex on a
+    worker thread, as one atomic critical section. Two concurrent `mode='create'`
+    calls for the same id therefore reliably resolve to one success + one
+    `already_exists` / `id_conflict`, with no race past the check.
     """
     if not app.ebony_exists():
         return _not_initialized()
@@ -277,49 +314,56 @@ async def write_proposal(app: App, arguments: dict[str, Any]) -> dict[str, Any]:
     target = _proposal_target_path(app.cfg.ebony_dir, proposal)
     target_rel = str(target.relative_to(app.cfg.ebony_dir))
 
-    # Phase 1 (outside mutex): cross-subdir id collision check. The walk
-    # awaits internally so other tool calls can interleave during it.
-    # S11 fix (v0.1.2+): same id in a different subdir would later return
-    # `ambiguous_id` from every `read_proposal` call, with no recovery.
-    existing = await _find_proposal_files_by_id(app.cfg.ebony_dir, proposal.id)
-    elsewhere = [p for p in existing if p.resolve() != target.resolve()]
-    if elsewhere:
-        return {
-            "error": "id_conflict",
-            "id": proposal.id,
-            "existing_paths": [str(p.relative_to(app.cfg.ebony_dir)) for p in elsewhere],
-            "message": (
-                f"a proposal with id {proposal.id!r} already exists in a different subdir; "
-                "ids must be unique across all subdirs"
-            ),
-        }
-
-    # S10 secondary fix (v0.1.2+): persist the validated model (with
-    # defaults applied), not the raw input.
+    # S10 secondary fix (v0.1.2+): persist the validated model (with defaults
+    # applied), not the raw input.
     on_disk_fm = PROPOSAL_ADAPTER.dump_python(proposal, mode="json")
     text = serialize_doc(on_disk_fm, body)
 
-    # Phase 2 (inside mutex, sync, on worker thread): existence check +
-    # write are atomic, closing the create-race that existed in
-    # v0.1.0-v0.1.3. The lock body is pure sync (no await); the W2
-    # invariant holds.
+    # The id-uniqueness check + the write run inside the single-writer mutex on
+    # a worker thread, as one atomic critical section (pure sync — no await — so
+    # the W2 invariant holds). Uniqueness is case-insensitive (`Foo`/`foo` are
+    # one id; they're the same file on a case-insensitive filesystem) and spans
+    # every subdir (S11: a duplicate id later returned `ambiguous_id` from every
+    # read with no recovery). Doing the walk in-lock also closes the create-race
+    # that a pre-lock check would leave open.
     def _commit() -> dict[str, Any] | None:
         with app.mutex.acquire("write_proposal"):
-            target_exists = target.is_file()
-            if mode == "create" and target_exists:
+            matches = _find_proposal_files_by_id_sync(app.cfg.ebony_dir, proposal.id)
+            here = [p for p in matches if p.parent == target.parent]
+            elsewhere = [p for p in matches if p.parent != target.parent]
+
+            if elsewhere:
                 return {
-                    "error": "already_exists",
+                    "error": "id_conflict",
                     "id": proposal.id,
-                    "path": target_rel,
+                    "existing_paths": [str(p.relative_to(app.cfg.ebony_dir)) for p in elsewhere],
                     "message": (
-                        "use `mode='update'` to rewrite, or `update_proposal_status` / "
-                        "`supersede_proposal` for the common lifecycle operations"
+                        f"a proposal with id {proposal.id!r} already exists in a different subdir; "
+                        "ids must be unique across all subdirs (case-insensitively)"
                     ),
                 }
-            if mode == "update" and not target_exists:
+
+            if mode == "create":
+                if here:
+                    return {
+                        "error": "already_exists",
+                        "id": proposal.id,
+                        "path": str(here[0].relative_to(app.cfg.ebony_dir)),
+                        "message": (
+                            "use `mode='update'` to rewrite, or `update_proposal_status` / "
+                            "`supersede_proposal` for the common lifecycle operations"
+                        ),
+                    }
+                commit_doc_text(target, text)
+                return None
+
+            # mode == "update": rewrite the existing file in place. Write to the
+            # file already on disk (its case may differ from `<id>.md`) so we
+            # never create a second, case-variant file alongside it.
+            if not here:
                 return {"error": "not_found", "id": proposal.id, "path": target_rel}
-            commit_doc_text(target, text)
-        return None
+            commit_doc_text(here[0], text)
+            return None
 
     err = await asyncio.to_thread(_commit)
     if err is not None:

@@ -24,12 +24,18 @@ from fastapi.middleware.gzip import GZipMiddleware
 from mcp import types
 from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
 from starlette.routing import Route
 
 from ebony_enriching import tools as tools_module
 from ebony_enriching.app import App
-from ebony_enriching.config import VERSION
+from ebony_enriching.config import (
+    ALLOWED_HOSTS,
+    ALLOWED_ORIGINS,
+    ENABLE_TRANSPORT_SECURITY,
+    VERSION,
+)
 from ebony_enriching.permissions import Scope
 
 logger = logging.getLogger(__name__)
@@ -80,7 +86,19 @@ _SERVER_SCOPE: Scope = _server_scope()
 # MCP server (mounted at /sse via the FastAPI app below)
 
 mcp = Server("ebony-enriching", version=VERSION)
-session_manager = StreamableHTTPSessionManager(app=mcp, stateless=True)
+# Enforce Host/Origin validation on the `/sse` transport. The SDK leaves DNS-
+# rebinding protection OFF by default; passing explicit security_settings turns
+# it on with a localhost allowlist (see ebony_enriching.config for the lists +
+# the threat model: a write-capable local server reached via DNS rebinding).
+session_manager = StreamableHTTPSessionManager(
+    app=mcp,
+    stateless=True,
+    security_settings=TransportSecuritySettings(
+        enable_dns_rebinding_protection=ENABLE_TRANSPORT_SECURITY,
+        allowed_hosts=ALLOWED_HOSTS,
+        allowed_origins=ALLOWED_ORIGINS,
+    ),
+)
 
 
 @mcp.list_tools()
@@ -193,7 +211,9 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Scoped to the same origin allowlist as the MCP transport — not `*` — so a
+    # foreign web page can't read responses cross-origin.
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
