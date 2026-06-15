@@ -29,6 +29,20 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v0.1.8] - 2026-06-15
+
+### Highlights
+
+This release enables MCP transport Host/Origin validation against a configurable allowlist (defaulting to localhost) and narrows CORS to match, addressing a DNS-rebinding exposure on the Streamable-HTTP endpoint; the behaviour is tunable via `EBONY_ENABLE_TRANSPORT_SECURITY`, `EBONY_ALLOWED_HOSTS`, and `EBONY_ALLOWED_ORIGINS`. Proposal ids are now resolved case-insensitively, so variants like `Foo` and `foo` are treated as the same id across read, update, supersede, and the cross-subdir uniqueness check, preventing silent overwrites on case-insensitive filesystems.
+
+### Bug fixes
+
+- Enforce MCP Host/Origin validation + case-insensitive proposal ids (#20) (8750cd3)
+
+### Docs
+
+- V0.1.7 [skip ci] (575fc0d)
+
 ## [v0.1.7] - 2026-06-14
 
 ### Highlights
