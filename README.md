@@ -278,6 +278,9 @@ $EBONY_ENRICHING_DIR/
 | `HOST` | `0.0.0.0` | HTTP bind address. |
 | `EBONY_ENRICHING_DIR` | `~/Documents/EbonyEnriching` | Path to the lab notebook this server wraps. Call `bootstrap` once to materialize the canonical layout. `EBONY_DIR` is accepted as a shorter alias. |
 | `EBONY_SCOPE` | `read_write` | `read_only`, `read_write`, or `remove_destructive`. Server-wide (single tier per process); tiered so a caller at tier N sees every tool whose required scope is ≤ N. (`remove_destructive` is reserved — no v0 tool requires it.) To serve some callers read-only and others read-write, run two instances on different ports with different `EBONY_SCOPE` values. |
+| `EBONY_ENABLE_TRANSPORT_SECURITY` | `true` | DNS-rebinding protection on the `/sse` transport: validates the `Host` (and, if present, `Origin`) header against the allowlists below so a malicious web page can't drive the tools via a rebound localhost connection. Leave on; set `false` only if a trusted proxy already validates these. |
+| `EBONY_ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` (any port) | Comma-separated `Host` values to accept (`<host>:*` matches any port). An unlisted Host is rejected with HTTP 421. **Set this if reaching the server by a bound hostname or across containers** (e.g. `EBONY_ALLOWED_HOSTS=ebony:35834`) — binding `0.0.0.0` alone is not enough. |
+| `EBONY_ALLOWED_ORIGINS` | `http://localhost[:PORT]`, `http://127.0.0.1[:PORT]` | Comma-separated browser `Origin` values to accept (also scopes CORS). An absent Origin — i.e. a non-browser MCP client — always passes; a foreign Origin is rejected with HTTP 403. |
 
 ## Tests
 
