@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Tests that verify real parallelism, not just correctness.
 
 These tests need to fire concurrent HTTP requests against a real

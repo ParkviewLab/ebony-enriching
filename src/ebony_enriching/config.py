@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Static configuration. Pure leaf module — no internal imports.
 
 Env-driven. One `Config` dataclass; no embedding sub-config

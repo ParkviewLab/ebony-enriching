@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Read-only vs. read-write scope filter.
 
 Tools are tagged with a `Scope` at registration time. The server reads

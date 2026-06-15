@@ -1,12 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 [project]
 name = "ebony-enriching"
 version = "0.1.5"
 description = "MCP server: an MCP lab notebook"
 readme = "README.md"
 requires-python = ">=3.13"
-license = "MIT"
-license-files = ["LICENSE"]
-authors = [{ name = "Gary", email = "garycoding@gmail.com" }]
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+authors = [{ name = "Gary Frattarola", email = "garyf@parkviewlab.ai" }]
 # Deliberately small dep set: ebony-enriching is text + filesystem only.
 # No database, no embedder, no LLM client. Queries are filesystem walks;
 # proposal / experiment / gap volumes are small enough for this to stay
@@ -29,6 +33,8 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "httpx",
+    "ruff",
+    "ty",
 ]
 
 [build-system]

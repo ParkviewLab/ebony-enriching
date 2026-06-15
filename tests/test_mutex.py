@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Unit tests for `LabNotebookMutex` under contention.
 
 Until v0.1.2 the suite only asserted on the mutex's at-rest shape; the

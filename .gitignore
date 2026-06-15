@@ -17,7 +17,6 @@ dist/
 
 # venv / uv
 .venv/
-.python-version
 
 # IDE
 .vscode/
@@ -34,6 +33,9 @@ Thumbs.db
 # Secrets
 .env
 .env.*
+
+# AI agent local state
+.claude/
 
 # Transient release artifact: scripts/generate_changelog.py writes this for
 # `gh release create --notes-file`; it's regenerated every release, never committed.

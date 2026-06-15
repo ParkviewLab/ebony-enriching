@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Shared-resource bundle for the running ebony-enriching server.
 
 One `App` instance is constructed at startup (in `server.py`) and made

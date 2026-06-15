@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """End-to-end smoke test: server starts; HTTP endpoints respond; MCP `status` + `bootstrap` round-trip."""
 
 from __future__ import annotations

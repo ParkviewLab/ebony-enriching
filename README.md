@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+
+SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
 # ebony-enriching
 
 MCP server: an MCP lab notebook.
@@ -283,18 +289,20 @@ Fast (~0.3s); exercises the full v0.1 tool surface in-process.
 
 ## Releasing
 
-Tag-driven via the release workflow on push of a `v*` tag. The CI gate enforces an SSOT contract: `pyproject.toml` is the only place the version lives, and CI verifies the pushed tag matches before publishing.
+Tag-driven: pushing a `v*` tag fires the release workflow. The CI gate enforces the
+SSOT contract — `pyproject.toml` `[project].version` is the single source of truth,
+the pushed tag must equal it, and **the tagged commit must be on `main`**.
 
-To release a new version:
+Cut releases from the `ebony-enriching-main` worktree, promoting `develop` (see
+[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) and the handbook's
+[`releases.md`](https://github.com/ParkviewLab/handbook/blob/main/docs/releases.md)):
 
 ```sh
-# 1. Bump pyproject.toml version manually (e.g. 0.1.0 → 0.1.1) and commit:
-$EDITOR pyproject.toml
-git commit -am "release v0.1.1"
-
-# 2. Tag and push:
-git tag -a v0.1.1 -m "release v0.1.1"
-git push --follow-tags      # CI fires
+git pull --ff-only            # sync main
+git merge --no-ff develop     # promote the integrated work
+git bump patch                # or minor / major / X.Y.Z — edits pyproject, commits the bump
+git release                   # annotated tag vX.Y.Z derived from the version SoT
+git push --follow-tags        # the tag push fires the release workflow
 ```
 
 ### Commit message convention
@@ -315,4 +323,13 @@ Squash-merge PRs use the PR title as the commit subject — so the **PR title** 
 
 ## License
 
-MIT. See `LICENSE`.
+`ebony-enriching` is licensed under **either of**, at your option:
+
+- the **MIT** license ([`LICENSE-MIT`](LICENSE-MIT)), or
+- the **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE)).
+
+In SPDX terms: `MIT OR Apache-2.0`. See [`LICENSING.md`](LICENSING.md) for the
+full statement.
+
+Unless you explicitly state otherwise, any contribution you submit for inclusion
+shall be dual-licensed as above, without any additional terms or conditions.
