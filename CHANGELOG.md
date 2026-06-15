@@ -23,6 +23,12 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v0.1.5] - 2026-06-14
+
+### Highlights
+
+This release adds automated changelog and GitHub Release generation on tag push, with each release's section comprising an LLM-written highlights paragraph and a git-cliff categorized commit list committed back to main. CHANGELOG.md has been backfilled for all prior tags (v0.1.0–v0.1.4), and the README now documents the changelog job and the Conventional Commit convention it relies on.
+
 ## [v0.1.4] - 2026-05-17
 
 ### Highlights
