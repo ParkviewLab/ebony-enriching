@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Tests that verify real parallelism, not just correctness.
 
 These tests need to fire concurrent HTTP requests against a real
@@ -214,6 +218,12 @@ async def populated(client_and_ebony: tuple[httpx.AsyncClient, Path]) -> httpx.A
 # Throughput
 
 
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="wall-clock throughput assertion is unreliable on shared CI runners "
+    "(sub-100ms ops on contended cores); the correctness-under-contention tests "
+    "below cover the parallelism invariants",
+)
 async def test_concurrent_reads_run_in_parallel(populated: httpx.AsyncClient) -> None:
     """N concurrent `read_proposal` calls complete in materially less wall
     time than the serial baseline. If the handlers weren't yielding (e.g.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 """Pure Pydantic-model tests for `ebony_enriching.schema`.
 
 No fixtures, no MCP transport — these tests construct models directly and
