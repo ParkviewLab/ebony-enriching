@@ -29,6 +29,16 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v0.1.9] - 2026-06-24
+
+### Highlights
+
+This is a maintenance release that updates the release workflow's action pins (`actions/checkout` to v6 and `astral-sh/setup-uv` to v8.1.0) to match the handbook template and avoid the Node 20 deprecation notice. There are no user-visible changes.
+
+### Docs
+
+- V0.1.8 [skip ci] (87f05d0)
+
 ## [v0.1.8] - 2026-06-15
 
 ### Highlights
