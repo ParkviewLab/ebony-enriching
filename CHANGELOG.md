@@ -29,6 +29,16 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v0.1.10] - 2026-06-24
+
+### Highlights
+
+This release is maintenance-only, bumping GitHub Actions pins to their verified Node 24 floors ahead of GitHub's removal of Node 20 from runners. There are no user-visible behaviour changes.
+
+### Docs
+
+- V0.1.9 [skip ci] (d571ad6)
+
 ## [v0.1.9] - 2026-06-24
 
 ### Highlights
