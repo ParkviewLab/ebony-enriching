@@ -293,8 +293,11 @@ Fast (~0.3s); exercises the full v0.1 tool surface in-process.
 ## Releasing
 
 Tag-driven: pushing a `v*` tag fires the release workflow. The CI gate enforces the
-SSOT contract — `pyproject.toml` `[project].version` is the single source of truth,
-the pushed tag must equal it, and **the tagged commit must be on `main`**.
+SSOT contract — `pyproject.toml` `[project].version` is the single source of truth —
+with four checks: the pushed tag must equal that version; the version must carry no
+`.devN` marker (`git bump release` drops it before tagging); the version must be
+strictly greater than the previous `v*` tag; and **the tagged commit must be on
+`main`**.
 
 Cut releases from the `ebony-enriching-main` worktree, promoting `develop` (see
 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) and the handbook's
