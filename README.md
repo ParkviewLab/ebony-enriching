@@ -313,7 +313,7 @@ git push --follow-tags        # the tag push fires the release workflow
 
 ### Commit message convention
 
-After the publish jobs, a **changelog** job generates the new `CHANGELOG.md` section — an LLM-written "Highlights" paragraph plus a [`git-cliff`](https://git-cliff.org/) categorized commit list — commits it back to `main`, and creates the GitHub Release with the same content as its body. Categorization uses [Conventional Commits](https://www.conventionalcommits.org/) prefixes (see [`cliff.toml`](cliff.toml)):
+After the publish jobs, a **changelog** job generates the new `CHANGELOG.md` section — an LLM-written "Highlights" paragraph plus a [`git-cliff`](https://git-cliff.org/) categorized commit list — commits it back to `main`, and creates the GitHub Release with the same content as its body. Categorization uses [Conventional Commits](https://www.conventionalcommits.org/) prefixes (the full list is in the ParkviewLab handbook's `commits-and-changelogs.md`):
 
 | Prefix | Section | Notes |
 |---|---|---|
