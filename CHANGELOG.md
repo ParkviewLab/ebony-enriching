@@ -20,6 +20,22 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v0.1.11] - 2026-09-27
+
+### Highlights
+
+This release updates locked dependencies past open security advisories, moving anyio from 4.13.0 to 4.14.2 and cryptography from 48.0.0 to 50.0.1, which affects the container image built from the lockfile. The release workflows have been reassembled from the shared handbook parts, adding a gate that checks the version is greater than the previous release tag and carries no dev marker. Changelog generation now uses the shared dev-tools script rather than a local git-cliff configuration, so entries follow the handbook's group table: `chore:`, `ci:`, `build:` and `style:` titles appear under Maintenance instead of being dropped, unrecognised titles are listed under Other changes, and breaking changes, reverts and direct commits get their own groups.
+
+### Bug fixes
+
+- Anyio and cryptography past their security advisories (#26)
+
+### Maintenance
+
+- Drop the shallow re-fetch from the version guard (#23)
+- Assemble the release workflows from the handbook's parts (#24)
+- Generate the changelog with dev-tools' shared script (#25)
+
 ## [v0.1.10] - 2026-06-24
 
 ### Highlights

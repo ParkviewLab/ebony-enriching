@@ -168,7 +168,7 @@ wheels = [
 
 [[package]]
 name = "ebony-enriching"
-version = "0.1.11.dev0"
+version = "0.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
