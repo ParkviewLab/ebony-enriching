@@ -36,7 +36,7 @@ from ebony_enriching.config import (
     ENABLE_TRANSPORT_SECURITY,
     VERSION,
 )
-from ebony_enriching.permissions import Scope
+from ebony_enriching.permissions import Scope, effective_scope, expected_internal_token
 
 logger = logging.getLogger(__name__)
 _started_at = time.time()
@@ -63,20 +63,32 @@ def _server_scope() -> Scope:
 
     Default is `read_write` since ebony-enriching is single-user and the
     lab-notebook write tools (proposals, experiments, gaps) are the
-    primary use. There's no inherently destructive tier in v0 — proposals
+    primary use. There's no inherently destructive tier in v0: proposals
     transition through statuses (rejected, applied, superseded), they're
     never deleted.
+
+    While `EBONY_INTERNAL_TOKEN` is unset the scope is capped at `read_only`
+    whatever `EBONY_SCOPE` asks for (an unconfigured token means read-only),
+    and a warning names the cap.
     """
     raw = (os.environ.get("EBONY_SCOPE") or "read_write").lower()
     if raw == "read_only":
-        return Scope.READ_ONLY
-    if raw == "read_write":
-        return Scope.READ_WRITE
-    if raw == "remove_destructive":
-        return Scope.REMOVE_DESTRUCTIVE
-    raise ValueError(
-        f"invalid EBONY_SCOPE={raw!r}; expected one of read_only / read_write / remove_destructive"
-    )
+        requested = Scope.READ_ONLY
+    elif raw == "read_write":
+        requested = Scope.READ_WRITE
+    elif raw == "remove_destructive":
+        requested = Scope.REMOVE_DESTRUCTIVE
+    else:
+        raise ValueError(
+            f"invalid EBONY_SCOPE={raw!r}; expected one of read_only / read_write / remove_destructive"
+        )
+    scope = effective_scope(requested, expected_internal_token())
+    if scope != requested:
+        logger.warning(
+            "EBONY_INTERNAL_TOKEN is unset, so the scope is capped at read_only (EBONY_SCOPE=%s asked for more)",
+            requested.value,
+        )
+    return scope
 
 
 _SERVER_SCOPE: Scope = _server_scope()
