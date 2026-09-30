@@ -49,13 +49,14 @@ uv sync
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run ty check
-uv run pytest -m "not network and not docling" -q
+uv run pytest -m "not network and not integration and not docling" -q
 uvx --from "reuse[charset-normalizer]" reuse lint
 ```
 
-A PR **can't be merged until the required checks pass** (lint, format, types,
-tests, REUSE, the version guard — see the handbook's `ci.md`). Push after each
-commit. See also `python-tooling.md` and `testing.md`.
+A PR **can't be merged until the required checks pass**: `test`, `reuse`,
+`no-version-change` and the licence check (`licenses`), on a branch that is up to
+date with `develop`; administrators are bound too (see the handbook's `ci.md`).
+Push after each commit. See also `python-tooling.md` and `testing.md`.
 
 ## Versioning
 
@@ -65,6 +66,6 @@ never type it on a `git tag` line — use `git bump` / `git release` from
 
 ## AI contributors
 
-Read `docs/northstar.md` first, and follow the behavioural contract in the
+If the repo has a `docs/northstar.md`, read it first, and follow the behavioural contract in the
 handbook's `ai-collaboration.md` (notably: merging/tagging/releasing need an
 explicit, per-release go-ahead).
