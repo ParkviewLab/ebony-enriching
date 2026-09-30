@@ -20,10 +20,12 @@ services:
       # Default is fine for local dev.
       # PUBLIC_BASE_URL: "http://localhost:35834"
 
-      # Read-write by default for single-user dev; flip to read_only for
-      # shared deployments where only some clients should mutate the
-      # notebook.
+      # Read-write for single-user dev; flip to read_only for shared
+      # deployments where only some clients should mutate the notebook.
       EBONY_SCOPE: "read_write"
+      # Without a token the scope is capped at read_only whatever
+      # EBONY_SCOPE says; set it to serve read_write.
+      EBONY_INTERNAL_TOKEN: "CHANGE-ME"
 
     # Pick one — named volume (default) or bind mount:
     volumes:

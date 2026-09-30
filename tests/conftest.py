@@ -49,6 +49,8 @@ def mcp_client(tmp_path_factory) -> TestClient:
     os.environ["EBONY_ENRICHING_DIR"] = str(ebony_dir)
     # Default scope is read_write; explicit here for clarity.
     os.environ["EBONY_SCOPE"] = "read_write"
+    # A configured token: without one the scope is capped at read_only.
+    os.environ["EBONY_INTERNAL_TOKEN"] = "test-internal-token"
 
     from ebony_enriching.server import app
 

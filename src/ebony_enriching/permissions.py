@@ -13,8 +13,16 @@ any tool whose required scope is ≤ N.
 serve some callers read-only and others read-write, run two instances
 on different ports with different `EBONY_SCOPE` values. Per-client
 token-based routing was prototyped during scaffolding and pulled in
-v0.1.2 because it was advertised but never actually wired up — the
+v0.1.2 because it was advertised but never actually wired up: the
 unused functions falsely implied an enforcement layer that didn't exist.
+
+**An unconfigured token means read-only** (the handbook's
+mcp-server-conventions.md, "Auth model"): while `EBONY_INTERNAL_TOKEN` is
+unset, the server's scope is capped at `READ_ONLY` whatever `EBONY_SCOPE`
+asks for, so the default an operator gets without thinking about it is the
+safe one. With the token set, `EBONY_SCOPE` applies as configured. The token
+is a deliberate switch and nothing more: it is not checked on incoming
+requests, which no server in the ParkviewLab family does yet.
 
 **No `REMOVE_DESTRUCTIVE` tier in v0.** Lab-notebook semantics are
 append-only-with-status-transitions: don't delete proposals (transition
@@ -25,6 +33,7 @@ v0 tool uses it.
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 
 
@@ -46,3 +55,19 @@ SCOPE_TIER: dict[Scope, int] = {
     Scope.READ_WRITE: 1,
     Scope.REMOVE_DESTRUCTIVE: 2,
 }
+
+
+# Single shared secret. An empty value counts as unset.
+_INTERNAL_TOKEN_ENV = "EBONY_INTERNAL_TOKEN"
+
+
+def expected_internal_token() -> str | None:
+    """Return the configured internal token, or None if it is not set."""
+    return os.environ.get(_INTERNAL_TOKEN_ENV) or None
+
+
+def effective_scope(requested: Scope, token: str | None) -> Scope:
+    """The server-wide scope: `requested`, capped at READ_ONLY when no token is configured."""
+    if token is None:
+        return Scope.READ_ONLY
+    return requested
