@@ -10,12 +10,12 @@ MCP server: an MCP lab notebook.
 
 ## Status
 
-**v0.1 surface complete.** 13 tools across 2 permission tiers, covering the full proposal / experiment / gap lifecycle.
+**Tool surface complete.** 13 tools across 2 permission tiers, covering the full proposal / experiment / gap lifecycle.
 
 - **READ_ONLY (6):** `status`, `read_proposal`, `list_proposals`, `read_experiment`, `list_experiments`, `list_gaps`
 - **READ_WRITE (7):** `bootstrap`, `write_proposal`, `update_proposal_status`, `supersede_proposal`, `write_experiment`, `add_gap`, `remove_gap`
 
-No `REMOVE_DESTRUCTIVE` tier in v0 — lab-notebook semantics are append-only with status transitions (don't delete proposals, transition to `rejected`; don't delete experiments, they're the historical record). Gaps are the one exception: `remove_gap` exists because a gap is a transient signal that gets resolved when the answering work lands.
+No `REMOVE_DESTRUCTIVE` tier — lab-notebook semantics are append-only with status transitions (don't delete proposals, transition to `rejected`; don't delete experiments, they're the historical record). Gaps are the one exception: `remove_gap` exists because a gap is a transient signal that gets resolved when the answering work lands.
 
 ## Lab notebook
 
@@ -56,14 +56,15 @@ curl http://127.0.0.1:35834/health
 `uvx` resolves the package into a temporary venv and runs it once. Nothing persists between runs.
 
 ```bash
-uvx ebony-enriching                                  # latest release
-uvx ebony-enriching@0.1.0                            # pin a specific version
+uvx ebony-enriching                                  # latest release (a version may be pinned: see the note below)
 
 # With env vars (custom data dir, restricted scope):
 EBONY_ENRICHING_DIR=$HOME/EbonyEnriching \
 EBONY_SCOPE=read_only \
   uvx ebony-enriching
 ```
+
+Releases up to 0.1.12 fail at import under mcp 2.x, which `uvx` resolves unless told otherwise; for such a release add `--with 'mcp<2'` (for example `uvx --with 'mcp<2' ebony-enriching@0.1.0`).
 
 Good for kicking the tires or running on a CI box where you don't want to leave anything on disk.
 
@@ -84,7 +85,7 @@ For a real "always running" setup, see the launchd / systemd recipes below.
 
 After `uv tool install ebony-enriching`, register a LaunchAgent so the daemon starts at login and restarts if it crashes.
 
-Save this as `~/Library/LaunchAgents/com.garycoding.ebony-enriching.plist` (replace `CHANGE-ME` with your username):
+Save this as `~/Library/LaunchAgents/com.garycoding.ebony-enriching.plist` (replace `CHANGE-ME` in the paths with your username, and in `EBONY_INTERNAL_TOKEN` with any non-empty value: a non-empty token lifts the read-only cap, and it is not checked on requests):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -106,6 +107,8 @@ Save this as `~/Library/LaunchAgents/com.garycoding.ebony-enriching.plist` (repl
     <string>/Users/CHANGE-ME/Documents/EbonyEnriching</string>
     <key>EBONY_SCOPE</key>
     <string>read_write</string>
+    <key>EBONY_INTERNAL_TOKEN</key>
+    <string>CHANGE-ME</string>
   </dict>
 
   <key>RunAtLoad</key><true/>
@@ -153,6 +156,7 @@ Restart=on-failure
 RestartSec=5
 Environment=EBONY_ENRICHING_DIR=%h/Documents/EbonyEnriching
 Environment=EBONY_SCOPE=read_write
+Environment=EBONY_INTERNAL_TOKEN=CHANGE-ME
 
 [Install]
 WantedBy=default.target
@@ -190,6 +194,7 @@ docker pull ghcr.io/parkviewlab/ebony-enriching:latest
 docker run --rm \
   -p 35834:35834 \
   -e EBONY_SCOPE=read_write \
+  -e EBONY_INTERNAL_TOKEN=CHANGE-ME \
   -v ebony-data:/data \
   ghcr.io/parkviewlab/ebony-enriching:latest
 ```
@@ -222,11 +227,11 @@ EBONY_ENRICHING_DIR=~/Documents/EbonyEnriching uv run python -m ebony_enriching
 - `GET /admin/version` — server identity + scope + configured EbonyEnriching path.
 - `GET /docs` — OpenAPI / Swagger UI for the HTTP routes.
 
-HTTP responses are gzipped when the client sends `Accept-Encoding: gzip`.
+Non-streaming HTTP responses of 256 bytes or more are gzipped when the client sends `Accept-Encoding: gzip`. MCP responses on `/sse` are `text/event-stream` and are not compressed.
 
 ## MCP tools
 
-Two permission tiers controlled by `EBONY_SCOPE`. A caller at tier N sees and may call any tool whose required scope is ≤ N.
+Two permission tiers controlled by `EBONY_SCOPE`. A caller at tier N sees and may call any tool whose required scope is ≤ N. While `EBONY_INTERNAL_TOKEN` is unset, the scope is capped at `read_only` whatever `EBONY_SCOPE` says (an unconfigured token means read-only), and the server logs a warning naming the cap; set the token to serve `read_write`.
 
 **`read_only` (6 tools):**
 
@@ -265,7 +270,7 @@ $EBONY_ENRICHING_DIR/
 ├── schema/
 │   ├── SCHEMA.md          # human-readable narrative of proposal / experiment / gap shape
 │   └── POLICY.md          # human-readable falsifiability + cost-tier policy
-└── config.toml            # reserved (empty in v0)
+└── config.toml            # reserved (empty)
 ```
 
 `bootstrap` materializes this layout. Proposal subdirs route by `proposal_kind` (schema-related kinds land in `proposals/schema/`; everything else lands in `proposals/<proposed_by>/`).
@@ -277,7 +282,8 @@ $EBONY_ENRICHING_DIR/
 | `PORT` | `35834` | HTTP listen port. |
 | `HOST` | `0.0.0.0` | HTTP bind address. |
 | `EBONY_ENRICHING_DIR` | `~/Documents/EbonyEnriching` | Path to the lab notebook this server wraps. Call `bootstrap` once to materialize the canonical layout. `EBONY_DIR` is accepted as a shorter alias. |
-| `EBONY_SCOPE` | `read_write` | `read_only`, `read_write`, or `remove_destructive`. Server-wide (single tier per process); tiered so a caller at tier N sees every tool whose required scope is ≤ N. (`remove_destructive` is reserved — no v0 tool requires it.) To serve some callers read-only and others read-write, run two instances on different ports with different `EBONY_SCOPE` values. |
+| `EBONY_SCOPE` | `read_write` | `read_only`, `read_write`, or `remove_destructive`. Server-wide (single tier per process); tiered so a caller at tier N sees every tool whose required scope is ≤ N. (`remove_destructive` is reserved — no tool requires it.) To serve some callers read-only and others read-write, run two instances on different ports with different `EBONY_SCOPE` values. Capped at `read_only` while `EBONY_INTERNAL_TOKEN` is unset. |
+| `EBONY_INTERNAL_TOKEN` | *(unset)* | Unset: the server is read-only whatever `EBONY_SCOPE` says. Set: `EBONY_SCOPE` applies. A deliberate switch only: it is not checked on incoming requests. |
 | `EBONY_ENABLE_TRANSPORT_SECURITY` | `true` | DNS-rebinding protection on the `/sse` transport: validates the `Host` (and, if present, `Origin`) header against the allowlists below so a malicious web page can't drive the tools via a rebound localhost connection. Leave on; set `false` only if a trusted proxy already validates these. |
 | `EBONY_ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` (any port) | Comma-separated `Host` values to accept (`<host>:*` matches any port). An unlisted Host is rejected with HTTP 421. **Set this if reaching the server by a bound hostname or across containers** (e.g. `EBONY_ALLOWED_HOSTS=ebony:35834`) — binding `0.0.0.0` alone is not enough. |
 | `EBONY_ALLOWED_ORIGINS` | `http://localhost[:PORT]`, `http://127.0.0.1[:PORT]` | Comma-separated browser `Origin` values to accept (also scopes CORS). An absent Origin — i.e. a non-browser MCP client — always passes; a foreign Origin is rejected with HTTP 403. |
@@ -288,7 +294,7 @@ $EBONY_ENRICHING_DIR/
 uv run pytest
 ```
 
-Fast (~0.3s); exercises the full v0.1 tool surface in-process.
+Fast (~0.3s); exercises the full tool surface in-process.
 
 ## Releasing
 
@@ -304,11 +310,13 @@ Cut releases from the `ebony-enriching-main` worktree, promoting `develop` (see
 [`releases.md`](https://github.com/ParkviewLab/handbook/blob/main/docs/releases.md)):
 
 ```sh
-git pull --ff-only            # sync main
-git merge --no-ff develop     # promote the integrated work
-git bump patch                # or minor / major / X.Y.Z — edits pyproject, commits the bump
-git release                   # annotated tag vX.Y.Z derived from the version SoT
-git push --follow-tags        # the tag push fires the release workflow
+git pull --ff-only                                 # sync main
+git -C ../ebony-enriching-develop pull --ff-only   # sync develop too, so the merge below promotes its true tip
+git merge --no-ff develop                          # promote the integrated work
+git bump patch                                     # or minor / major / X.Y.Z — edits pyproject, commits the bump
+git release                                        # annotated tag vX.Y.Z derived from the version SoT
+git push --follow-tags                             # the tag push fires the release workflow
+git back-merge                                     # the last step: brings main's release back to develop through a checked PR
 ```
 
 ### Commit message convention

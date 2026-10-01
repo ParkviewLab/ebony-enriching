@@ -168,7 +168,7 @@ wheels = [
 
 [[package]]
 name = "ebony-enriching"
-version = "0.1.12"
+version = "0.1.13.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -192,7 +192,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.27.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.27,<2" },
     { name = "pydantic" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },

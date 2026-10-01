@@ -84,6 +84,7 @@ def parallel_server() -> Iterator[tuple[int, Path]]:
             "EBONY_ENRICHING_DIR": str(ebony_dir),
             "PORT": str(port),
             "EBONY_SCOPE": "read_write",
+            "EBONY_INTERNAL_TOKEN": "test-internal-token",
         }
         proc = subprocess.Popen(
             [sys.executable, "-m", "ebony_enriching"],
