@@ -20,6 +20,24 @@ section here, and uses the same content as the GitHub Release body.
 
 ## [Unreleased]
 
+## [v1.0.0] - 2026-10-01
+
+### Highlights
+
+The auth model has changed: a server started without `EBONY_INTERNAL_TOKEN` configured now serves only its read-only tools, where it previously defaulted to read-write, so existing deployments that need write access must set that token (the README, launchd, systemd, Docker and compose examples have been updated accordingly). The `mcp` dependency is now pinned below 2, fixing a fresh install of the previous release resolving mcp 2.2.0 and failing at import. The README, CONTRIBUTING and compose file have also been corrected, including the removal of the unused `PUBLIC_BASE_URL` setting, alongside internal alignment with handbook v2.1.0 and a CI test command change.
+
+### Breaking changes
+
+- An unconfigured token means read-only (#30)
+
+### Bug fixes
+
+- Keep mcp below 2, and correct the documents (#31)
+
+### Maintenance
+
+- Align with handbook v2.1.0 (#29)
+
 ## [v0.1.12] - 2026-09-27
 
 ### Highlights
