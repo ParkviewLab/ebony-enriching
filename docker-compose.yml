@@ -16,12 +16,10 @@ services:
     ports:
       - "35834:35834"
     environment:
-      # Externally-reachable URL clients use (set in real deployments).
-      # Default is fine for local dev.
-      # PUBLIC_BASE_URL: "http://localhost:35834"
-
-      # Read-write for single-user dev; flip to read_only for shared
-      # deployments where only some clients should mutate the notebook.
+      # Read-write for single-user dev. The scope is server-wide: a
+      # read_only server lets no client write. To serve some clients
+      # read-only and others read-write, run two instances with different
+      # EBONY_SCOPE values (see the README's Configuration section).
       EBONY_SCOPE: "read_write"
       # Without a token the scope is capped at read_only whatever
       # EBONY_SCOPE says; set it to serve read_write.
